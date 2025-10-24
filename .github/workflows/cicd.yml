@@ -45,7 +45,7 @@ jobs:
       # Stage 5: End-to-End Testing
       - name: Start test environment
         run: |
-          docker-compose -f docker-compose.test.yml up -d
+          docker compose -f docker-compose.test.yml up -d
           echo "Waiting for services to be ready..."
           sleep 20
 
@@ -57,7 +57,7 @@ jobs:
       - name: Stop test environment
         if: always()
         run: |
-          docker-compose -f docker-compose.test.yml down -v
+          docker compose -f docker-compose.test.yml down -v
 
       # Stage 6: Publish to ECR
       - name: Configure AWS credentials
