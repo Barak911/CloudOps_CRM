@@ -1,0 +1,474 @@
+name: Initial Deployment
+
+on:
+  workflow_dispatch:  # Manual trigger only
+    inputs:
+      aws_region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name'
+        required: true
+        default: 'develeap-eks-cluster'
+
+env:
+  AWS_REGION: ${{ github.event.inputs.aws_region || 'us-east-1' }}
+  ECR_REPOSITORY: crm-app
+  EKS_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || 'develeap-eks-cluster' }}
+
+jobs:
+  # Job 1: Build and push image to ECR
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image-tag: ${{ steps.image-info.outputs.tag }}
+      ecr-registry: ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: |
+          pytest test_app.py -v
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to ECR
+        id: image-info
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "✅ Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+  # Job 2: Deploy MongoDB to Kubernetes
+  deploy-mongodb:
+    name: Deploy MongoDB
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Check if MongoDB already exists
+        id: check-mongodb
+        run: |
+          if kubectl get statefulset mongodb -n default >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "⚠️ MongoDB StatefulSet already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "✅ MongoDB StatefulSet does not exist, will deploy"
+          fi
+
+      - name: Deploy MongoDB StatefulSet
+        if: steps.check-mongodb.outputs.exists == 'false'
+        run: |
+          cd ../cluster-resources
+          kubectl apply -f mongodb-deployment.yaml
+          kubectl apply -f mongodb-service.yaml
+          echo "✅ MongoDB deployed"
+
+      - name: Wait for MongoDB to be ready
+        run: |
+          echo "Waiting for MongoDB pod to be ready..."
+          kubectl wait --for=condition=ready pod -l app=mongodb --timeout=300s -n default
+          echo "✅ MongoDB is ready"
+
+      - name: Verify MongoDB deployment
+        run: |
+          echo "=== MongoDB StatefulSet ==="
+          kubectl get statefulset mongodb -n default
+          echo ""
+          echo "=== MongoDB Service ==="
+          kubectl get service mongodb -n default
+          echo ""
+          echo "=== MongoDB Pods ==="
+          kubectl get pods -l app=mongodb -n default
+          echo ""
+          echo "=== MongoDB Logs (last 20 lines) ==="
+          kubectl logs -l app=mongodb --tail=20 -n default
+
+  # Job 3: Deploy CRM Application
+  deploy-app:
+    name: Deploy CRM Application
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-mongodb]
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      load-balancer-url: ${{ steps.get-lb.outputs.url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy CRM Application
+        env:
+          ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr-registry }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image-tag }}
+        run: |
+          cd ../cluster-resources
+
+          # Update image in deployment
+          sed "s|253490775265.dkr.ecr.us-east-1.amazonaws.com/crm-app:latest|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" app-deployment.yaml > app-deployment-updated.yaml
+
+          kubectl apply -f app-deployment-updated.yaml
+          kubectl apply -f app-service.yaml
+          echo "✅ CRM application deployed"
+
+      - name: Wait for deployment to be ready
+        run: |
+          echo "Waiting for CRM app deployment to be ready..."
+          kubectl rollout status deployment/crm-app -n default --timeout=300s
+          echo "✅ CRM app deployment is ready"
+
+      - name: Wait for LoadBalancer to provision
+        id: get-lb
+        run: |
+          echo "Waiting for LoadBalancer to provision (may take 2-3 minutes)..."
+          for i in {1..30}; do
+            LB_URL=$(kubectl get service crm-app -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            if [ -n "$LB_URL" ]; then
+              echo "url=$LB_URL" >> $GITHUB_OUTPUT
+              echo "✅ LoadBalancer URL: $LB_URL"
+              break
+            fi
+            echo "Attempt $i/30: LoadBalancer not ready yet..."
+            sleep 10
+          done
+
+          if [ -z "$LB_URL" ]; then
+            echo "❌ LoadBalancer failed to provision"
+            exit 1
+          fi
+
+      - name: Verify deployment
+        run: |
+          echo "=== All Resources ==="
+          kubectl get all -n default -o wide
+          echo ""
+          echo "=== CRM App Deployment ==="
+          kubectl get deployment crm-app -n default
+          echo ""
+          echo "=== CRM App Pods ==="
+          kubectl get pods -l app=crm-app -n default
+          echo ""
+          echo "=== CRM App Service ==="
+          kubectl get service crm-app -n default
+
+      - name: Check Pod Logs
+        run: |
+          echo "=== CRM App Logs (last 30 lines from each pod) ==="
+          for pod in $(kubectl get pods -l app=crm-app -n default -o jsonpath='{.items[*].metadata.name}'); do
+            echo "--- Logs from $pod ---"
+            kubectl logs $pod --tail=30 -n default
+            echo ""
+          done
+
+  # Job 4: Integration Tests
+  integration-tests:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+    needs: deploy-app
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Get LoadBalancer URL
+        id: get-lb
+        run: |
+          LB_URL=$(kubectl get service crm-app -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "url=$LB_URL" >> $GITHUB_OUTPUT
+          echo "LoadBalancer URL: $LB_URL"
+
+      - name: Wait for DNS propagation
+        run: |
+          echo "Waiting for DNS propagation..."
+          LB_URL="${{ steps.get-lb.outputs.url }}"
+          for i in {1..30}; do
+            if host $LB_URL >/dev/null 2>&1; then
+              echo "✅ DNS resolved successfully"
+              break
+            fi
+            echo "Attempt $i/30: DNS not resolved yet..."
+            sleep 10
+          done
+
+      - name: Test API Root Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: $LB_URL/"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "❌ Root endpoint test failed"
+            exit 1
+          fi
+          echo "✅ Root endpoint test passed"
+
+      - name: Test Health Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: $LB_URL/health"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/health)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "❌ Health endpoint test failed"
+            exit 1
+          fi
+          echo "✅ Health endpoint test passed"
+
+      - name: Test POST Person Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: POST $LB_URL/person/test-user-1"
+
+          response=$(curl -s -w "\n%{http_code}" -X POST $LB_URL/person/test-user-1 \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Test User","email":"test@example.com","phone":"555-0001"}')
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "❌ POST person test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Person added successfully"; then
+            echo "❌ POST person response invalid"
+            exit 1
+          fi
+          echo "✅ POST person test passed"
+
+      - name: Test GET All Persons Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: GET $LB_URL/person"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/person)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "❌ GET all persons test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "test@example.com"; then
+            echo "❌ Test user not found in response"
+            exit 1
+          fi
+          echo "✅ GET all persons test passed"
+
+      - name: Test GET Person by ID Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: GET $LB_URL/person?id=test-user-1"
+
+          response=$(curl -s -w "\n%{http_code}" "$LB_URL/person?id=test-user-1")
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "❌ GET person by ID test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Test User"; then
+            echo "❌ Person data not found"
+            exit 1
+          fi
+          echo "✅ GET person by ID test passed"
+
+      - name: Test MongoDB Connectivity
+        run: |
+          echo "Testing MongoDB connectivity through application..."
+
+          # Add another user to test DB persistence
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          curl -s -X POST $LB_URL/person/test-user-2 \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Second User","email":"second@example.com","phone":"555-0002"}'
+
+          # Get all users
+          response=$(curl -s $LB_URL/person)
+
+          # Check if both users exist
+          if ! echo "$response" | grep -q "test@example.com"; then
+            echo "❌ First user not found"
+            exit 1
+          fi
+
+          if ! echo "$response" | grep -q "second@example.com"; then
+            echo "❌ Second user not found"
+            exit 1
+          fi
+
+          echo "✅ MongoDB connectivity test passed"
+
+  # Job 5: Generate Deployment Report
+  deployment-report:
+    name: Generate Deployment Report
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-mongodb, deploy-app, integration-tests]
+    if: always()
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Generate Deployment Summary
+        run: |
+          echo "# 🚀 Deployment Summary"
+          echo ""
+          echo "## Build Information"
+          echo "- **Commit SHA**: ${{ github.sha }}"
+          echo "- **Image Tag**: ${{ needs.build-and-push.outputs.image-tag }}"
+          echo "- **ECR Registry**: ${{ needs.build-and-push.outputs.ecr-registry }}"
+          echo ""
+          echo "## Cluster Information"
+          echo "- **Cluster**: ${{ env.EKS_CLUSTER_NAME }}"
+          echo "- **Region**: ${{ env.AWS_REGION }}"
+          echo ""
+          echo "## Application URL"
+          LB_URL=$(kubectl get service crm-app -n default -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "- **LoadBalancer**: http://$LB_URL"
+          echo ""
+          echo "## Deployment Status"
+          echo ""
+          echo "### Pods"
+          kubectl get pods -n default -o wide
+          echo ""
+          echo "### Services"
+          kubectl get services -n default
+          echo ""
+          echo "### Deployments"
+          kubectl get deployments -n default
+          echo ""
+          echo "## Job Results"
+          echo "- **Build and Push**: ${{ needs.build-and-push.result }}"
+          echo "- **Deploy MongoDB**: ${{ needs.deploy-mongodb.result }}"
+          echo "- **Deploy App**: ${{ needs.deploy-app.result }}"
+          echo "- **Integration Tests**: ${{ needs.integration-tests.result }}"
+          echo ""
+          echo "## Quick Test Commands"
+          echo ""
+          echo '```bash'
+          echo "# API Root"
+          echo "curl http://$LB_URL/"
+          echo ""
+          echo "# Health Check"
+          echo "curl http://$LB_URL/health"
+          echo ""
+          echo "# Add Person"
+          echo 'curl -X POST http://'"$LB_URL"'/person/123 \'
+          echo '  -H "Content-Type: application/json" \'
+          echo '  -d '"'"'{"name":"John Doe","email":"john@example.com","phone":"555-1234"}'"'"
+          echo ""
+          echo "# Get All Persons"
+          echo "curl http://$LB_URL/person"
+          echo '```'
+          echo ""
+          echo "---"
+          echo "✅ Deployment Complete!"
