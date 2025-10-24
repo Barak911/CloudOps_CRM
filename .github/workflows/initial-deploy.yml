@@ -80,8 +80,11 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout code
+      - name: Checkout cluster resources repository
         uses: actions/checkout@v4
+        with:
+          repository: Barak911/CloudOps_CRM_cluster
+          path: cluster-resources
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -107,7 +110,7 @@ jobs:
       - name: Deploy MongoDB StatefulSet
         if: steps.check-mongodb.outputs.exists == 'false'
         run: |
-          cd ../cluster-resources
+          cd cluster-resources
           kubectl apply -f mongodb-deployment.yaml
           kubectl apply -f mongodb-service.yaml
           echo "✅ MongoDB deployed"
@@ -144,8 +147,11 @@ jobs:
       load-balancer-url: ${{ steps.get-lb.outputs.url }}
 
     steps:
-      - name: Checkout code
+      - name: Checkout cluster resources repository
         uses: actions/checkout@v4
+        with:
+          repository: Barak911/CloudOps_CRM_cluster
+          path: cluster-resources
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -162,7 +168,7 @@ jobs:
           ECR_REGISTRY: ${{ needs.build-and-push.outputs.ecr-registry }}
           IMAGE_TAG: ${{ needs.build-and-push.outputs.image-tag }}
         run: |
-          cd ../cluster-resources
+          cd cluster-resources
 
           # Update image in deployment
           sed "s|253490775265.dkr.ecr.us-east-1.amazonaws.com/crm-app:latest|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" app-deployment.yaml > app-deployment-updated.yaml
