@@ -13,6 +13,9 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       # Stage 1: Clone/Pull
@@ -63,8 +66,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -83,25 +85,59 @@ jobs:
           echo "Image pushed: $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG"
 
       # Stage 7: Deploy to K8S cluster
+      - name: Check if EKS cluster exists
+        id: check-cluster
+        run: |
+          if aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Install kubectl
+        if: steps.check-cluster.outputs.exists == 'true'
         uses: azure/setup-kubectl@v3
         with:
           version: 'latest'
 
       - name: Update kubeconfig
+        if: steps.check-cluster.outputs.exists == 'true'
         run: |
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-      - name: Deploy to Kubernetes
+      - name: Check if deployment exists
+        if: steps.check-cluster.outputs.exists == 'true'
+        id: check-deployment
+        run: |
+          if kubectl get deployment crm-app -n default >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Deploy to Kubernetes (update existing)
+        if: steps.check-cluster.outputs.exists == 'true' && steps.check-deployment.outputs.exists == 'true'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
           kubectl set image deployment/crm-app crm-app=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG -n default
           kubectl rollout status deployment/crm-app -n default
-          echo "Deployment completed successfully!"
+          echo "Deployment updated successfully!"
+
+      - name: Skip deployment (not deployed yet)
+        if: steps.check-cluster.outputs.exists == 'true' && steps.check-deployment.outputs.exists == 'false'
+        run: |
+          echo "Deployment 'crm-app' does not exist yet. Skipping kubectl set image."
+          echo "Please deploy the application manually first using kubectl apply."
+
+      - name: Skip deployment (cluster not found)
+        if: steps.check-cluster.outputs.exists == 'false'
+        run: |
+          echo "EKS cluster '${{ env.EKS_CLUSTER_NAME }}' not found. Skipping deployment."
 
       - name: Verify deployment
+        if: steps.check-cluster.outputs.exists == 'true' && steps.check-deployment.outputs.exists == 'true'
         run: |
           kubectl get pods -n default
           kubectl get services -n default
