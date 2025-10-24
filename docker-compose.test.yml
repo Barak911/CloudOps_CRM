@@ -1,0 +1,45 @@
+version: '3.8'
+
+# Docker compose for E2E testing in CI/CD pipeline
+services:
+  mongodb-test:
+    image: mongo:7.0
+    container_name: crm-mongodb-test
+    environment:
+      MONGO_INITDB_DATABASE: crm_db_test
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - test-network
+
+  app-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crm-app-test
+    ports:
+      - "5001:5000"
+    environment:
+      - MONGO_URI=mongodb://mongodb-test:27017/crm_db_test
+      - PORT=5000
+    depends_on:
+      mongodb-test:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge
