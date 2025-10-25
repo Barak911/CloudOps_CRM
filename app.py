@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_pymongo import PyMongo
 from bson.objectid import ObjectId
+from prometheus_flask_exporter import PrometheusMetrics
 import os
 
 app = Flask(__name__)
@@ -8,6 +9,12 @@ app = Flask(__name__)
 # MongoDB configuration
 app.config["MONGO_URI"] = os.getenv("MONGO_URI", "mongodb://localhost:27017/crm_db")
 mongo = PyMongo(app)
+
+# Prometheus metrics configuration
+metrics = PrometheusMetrics(app)
+
+# Custom metrics
+metrics.info('crm_app_info', 'CRM Application info', version='2.0.0', environment=os.getenv("ENVIRONMENT", "production"))
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -134,6 +141,7 @@ def root():
         "version": "2.0.0",
         "endpoints": {
             "GET /health": "Health check",
+            "GET /metrics": "Prometheus metrics",
             "GET /person": "Get all persons",
             "GET /person?id=<mongodb_id>": "Get person by MongoDB ObjectId",
             "GET /person/<custom_id>": "Get person by custom ID",
