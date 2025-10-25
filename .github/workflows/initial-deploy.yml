@@ -306,6 +306,7 @@ jobs:
           echo "✅ Health endpoint test passed"
 
       - name: Test POST Person Endpoint
+        id: post-person
         run: |
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: POST $LB_URL/person/test-user-1"
@@ -329,6 +330,11 @@ jobs:
             echo "❌ POST person response invalid"
             exit 1
           fi
+
+          # Extract the MongoDB _id from response for later use
+          PERSON_ID=$(echo "$body" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          echo "person_id=$PERSON_ID" >> $GITHUB_OUTPUT
+          echo "Extracted Person ID: $PERSON_ID"
           echo "✅ POST person test passed"
 
       - name: Test GET All Persons Endpoint
@@ -357,9 +363,10 @@ jobs:
       - name: Test GET Person by ID Endpoint
         run: |
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
-          echo "Testing: GET $LB_URL/person?id=test-user-1"
+          PERSON_ID="${{ steps.post-person.outputs.person_id }}"
+          echo "Testing: GET $LB_URL/person?id=$PERSON_ID"
 
-          response=$(curl -s -w "\n%{http_code}" "$LB_URL/person?id=test-user-1")
+          response=$(curl -s -w "\n%{http_code}" "$LB_URL/person?id=$PERSON_ID")
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | head -n-1)
 
