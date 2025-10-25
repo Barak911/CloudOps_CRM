@@ -320,8 +320,8 @@ jobs:
           echo "HTTP Code: $http_code"
           echo "Response: $body"
 
-          if [ "$http_code" != "200" ]; then
-            echo "❌ POST person test failed"
+          if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
+            echo "❌ POST person test failed - expected 200 or 201, got $http_code"
             exit 1
           fi
 
