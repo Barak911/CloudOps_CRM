@@ -410,6 +410,103 @@ jobs:
 
           echo "✅ MongoDB connectivity test passed"
 
+      - name: Test GET Person by Custom ID
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: GET $LB_URL/person/test-user-1"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/person/test-user-1)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "❌ GET person by custom ID test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Test User"; then
+            echo "❌ Person data not found by custom ID"
+            exit 1
+          fi
+          echo "✅ GET person by custom ID test passed"
+
+      - name: Test PUT Update Person
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: PUT $LB_URL/person/test-user-1"
+
+          response=$(curl -s -w "\n%{http_code}" -X PUT $LB_URL/person/test-user-1 \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Updated Test User","email":"updated@example.com","phone":"555-9999"}')
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "❌ PUT update person test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Person updated successfully"; then
+            echo "❌ PUT response invalid"
+            exit 1
+          fi
+
+          # Verify the update
+          verify_response=$(curl -s $LB_URL/person/test-user-1)
+          if ! echo "$verify_response" | grep -q "Updated Test User"; then
+            echo "❌ Update verification failed"
+            exit 1
+          fi
+          if ! echo "$verify_response" | grep -q "updated@example.com"; then
+            echo "❌ Email update verification failed"
+            exit 1
+          fi
+          echo "✅ PUT update person test passed"
+
+      - name: Test DELETE Person
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+
+          # First add a user to delete
+          curl -s -X POST $LB_URL/person/test-user-delete \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Delete Me","email":"delete@example.com","phone":"555-0000"}'
+
+          echo "Testing: DELETE $LB_URL/person/test-user-delete"
+
+          response=$(curl -s -w "\n%{http_code}" -X DELETE $LB_URL/person/test-user-delete)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | head -n-1)
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "❌ DELETE person test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Person deleted successfully"; then
+            echo "❌ DELETE response invalid"
+            exit 1
+          fi
+
+          # Verify deletion - should return 404
+          verify_response=$(curl -s -w "\n%{http_code}" $LB_URL/person/test-user-delete)
+          verify_code=$(echo "$verify_response" | tail -n1)
+          if [ "$verify_code" != "404" ]; then
+            echo "❌ Delete verification failed - person still exists"
+            exit 1
+          fi
+          echo "✅ DELETE person test passed"
+
   # Job 5: Generate Deployment Report
   deployment-report:
     name: Generate Deployment Report
