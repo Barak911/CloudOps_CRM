@@ -61,17 +61,85 @@ def add_person(person_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/person/<person_id>', methods=['GET'])
+def get_person_by_custom_id(person_id):
+    """Get a person by their custom person_id"""
+    try:
+        person = mongo.db.persons.find_one({"person_id": person_id})
+
+        if person:
+            person['_id'] = str(person['_id'])
+            return jsonify(person), 200
+
+        return jsonify({"error": "Person not found"}), 404
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/person/<person_id>', methods=['PUT'])
+def update_person(person_id):
+    """Update an existing person by their custom person_id"""
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        # Find and update the person
+        result = mongo.db.persons.update_one(
+            {"person_id": person_id},
+            {"$set": data}
+        )
+
+        if result.matched_count == 0:
+            return jsonify({"error": "Person not found"}), 404
+
+        if result.modified_count == 0:
+            return jsonify({
+                "message": "No changes made",
+                "person_id": person_id
+            }), 200
+
+        return jsonify({
+            "message": "Person updated successfully",
+            "person_id": person_id,
+            "modified_count": result.modified_count
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/person/<person_id>', methods=['DELETE'])
+def delete_person(person_id):
+    """Delete a person by their custom person_id"""
+    try:
+        result = mongo.db.persons.delete_one({"person_id": person_id})
+
+        if result.deleted_count == 0:
+            return jsonify({"error": "Person not found"}), 404
+
+        return jsonify({
+            "message": "Person deleted successfully",
+            "person_id": person_id
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/', methods=['GET'])
 def root():
     """Root endpoint with API information"""
     return jsonify({
         "service": "CRM REST API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "endpoints": {
             "GET /health": "Health check",
             "GET /person": "Get all persons",
-            "GET /person?id=<id>": "Get person by ID",
-            "POST /person/<id>": "Add person with ID"
+            "GET /person?id=<mongodb_id>": "Get person by MongoDB ObjectId",
+            "GET /person/<custom_id>": "Get person by custom ID",
+            "POST /person/<custom_id>": "Add person with custom ID",
+            "PUT /person/<custom_id>": "Update person by custom ID",
+            "DELETE /person/<custom_id>": "Delete person by custom ID"
         }
     }), 200
 
