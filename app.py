@@ -3,6 +3,10 @@ from flask_pymongo import PyMongo
 from bson.objectid import ObjectId
 from prometheus_flask_exporter import PrometheusMetrics
 import os
+import logging
+import json
+from datetime import datetime
+import uuid
 
 app = Flask(__name__)
 
@@ -15,6 +19,67 @@ metrics = PrometheusMetrics(app)
 
 # Custom metrics
 metrics.info('crm_app_info', 'CRM Application info', version='2.0.0', environment=os.getenv("ENVIRONMENT", "production"))
+
+# Configure JSON structured logging
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_data = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno
+        }
+
+        # Add extra fields if they exist
+        if hasattr(record, 'correlation_id'):
+            log_data['correlation_id'] = record.correlation_id
+        if hasattr(record, 'request_method'):
+            log_data['request_method'] = record.request_method
+        if hasattr(record, 'request_path'):
+            log_data['request_path'] = record.request_path
+        if hasattr(record, 'status_code'):
+            log_data['status_code'] = record.status_code
+        if hasattr(record, 'user_id'):
+            log_data['user_id'] = record.user_id
+
+        return json.dumps(log_data)
+
+# Set up logging
+handler = logging.StreamHandler()
+handler.setFormatter(JsonFormatter())
+app.logger.addHandler(handler)
+app.logger.setLevel(logging.INFO)
+logger = app.logger
+
+# Request logging middleware
+@app.before_request
+def before_request():
+    request.correlation_id = request.headers.get('X-Correlation-ID', str(uuid.uuid4()))
+    logger.info(
+        f"Incoming request: {request.method} {request.path}",
+        extra={
+            'correlation_id': request.correlation_id,
+            'request_method': request.method,
+            'request_path': request.path,
+            'remote_addr': request.remote_addr
+        }
+    )
+
+@app.after_request
+def after_request(response):
+    logger.info(
+        f"Request completed: {request.method} {request.path}",
+        extra={
+            'correlation_id': getattr(request, 'correlation_id', 'unknown'),
+            'request_method': request.method,
+            'request_path': request.path,
+            'status_code': response.status_code
+        }
+    )
+    return response
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -51,6 +116,7 @@ def add_person(person_id):
         data = request.get_json()
 
         if not data:
+            logger.warning(f"Add person failed: No data provided", extra={'correlation_id': getattr(request, 'correlation_id', 'unknown')})
             return jsonify({"error": "No data provided"}), 400
 
         # Add the person_id from URL to the document
@@ -59,6 +125,15 @@ def add_person(person_id):
         # Insert into MongoDB
         result = mongo.db.persons.insert_one(data)
 
+        logger.info(
+            f"Person added successfully: {person_id}",
+            extra={
+                'correlation_id': getattr(request, 'correlation_id', 'unknown'),
+                'person_id': person_id,
+                'mongodb_id': str(result.inserted_id)
+            }
+        )
+
         return jsonify({
             "message": "Person added successfully",
             "id": str(result.inserted_id),
@@ -66,6 +141,15 @@ def add_person(person_id):
         }), 201
 
     except Exception as e:
+        logger.error(
+            f"Error adding person: {str(e)}",
+            extra={
+                'correlation_id': getattr(request, 'correlation_id', 'unknown'),
+                'person_id': person_id,
+                'error': str(e)
+            },
+            exc_info=True
+        )
         return jsonify({"error": str(e)}), 500
 
 @app.route('/person/<person_id>', methods=['GET'])
