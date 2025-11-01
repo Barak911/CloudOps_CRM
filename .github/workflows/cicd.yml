@@ -84,7 +84,7 @@ jobs:
           docker push $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:latest
           echo "Image pushed: $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG"
 
-      # Stage 7: Deploy to K8S cluster
+      # Stage 7: Deploy to K8S cluster using Helm
       - name: Check if EKS cluster exists
         id: check-cluster
         run: |
@@ -94,42 +94,60 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Install kubectl
+      - name: Install kubectl and Helm
         if: steps.check-cluster.outputs.exists == 'true'
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'latest'
+        run: |
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+          # Install Helm
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
       - name: Update kubeconfig
         if: steps.check-cluster.outputs.exists == 'true'
         run: |
           aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-      - name: Check if deployment exists
+      - name: Clone cluster-resources repository
         if: steps.check-cluster.outputs.exists == 'true'
-        id: check-deployment
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/CloudOps_CRM_Cluster
+          path: cluster-resources
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check if Helm release exists
+        if: steps.check-cluster.outputs.exists == 'true'
+        id: check-helm-release
         run: |
-          if kubectl get deployment crm-app -n default >/dev/null 2>&1; then
+          if helm list -n default | grep -q crm-stack; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Deploy to Kubernetes (update existing)
-        if: steps.check-cluster.outputs.exists == 'true' && steps.check-deployment.outputs.exists == 'true'
+      - name: Deploy/Upgrade with Helm
+        if: steps.check-cluster.outputs.exists == 'true' && steps.check-helm-release.outputs.exists == 'true'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          kubectl set image deployment/crm-app crm-app=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG -n default
-          kubectl rollout status deployment/crm-app -n default
-          echo "Deployment updated successfully!"
+          cd cluster-resources/crm-stack
+          helm upgrade crm-stack . \
+            --set crm-app.image.repository=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }} \
+            --set crm-app.image.tag=$IMAGE_TAG \
+            --namespace default \
+            --timeout 5m \
+            --wait
+          echo "Helm release upgraded successfully!"
 
-      - name: Skip deployment (not deployed yet)
-        if: steps.check-cluster.outputs.exists == 'true' && steps.check-deployment.outputs.exists == 'false'
+      - name: Skip deployment (Helm release not found)
+        if: steps.check-cluster.outputs.exists == 'true' && steps.check-helm-release.outputs.exists == 'false'
         run: |
-          echo "Deployment 'crm-app' does not exist yet. Skipping kubectl set image."
-          echo "Please deploy the application manually first using kubectl apply."
+          echo "Helm release 'crm-stack' does not exist. Skipping upgrade."
+          echo "Please install the Helm chart first: helm install crm-stack ./crm-stack"
 
       - name: Skip deployment (cluster not found)
         if: steps.check-cluster.outputs.exists == 'false'
@@ -137,7 +155,8 @@ jobs:
           echo "EKS cluster '${{ env.EKS_CLUSTER_NAME }}' not found. Skipping deployment."
 
       - name: Verify deployment
-        if: steps.check-cluster.outputs.exists == 'true' && steps.check-deployment.outputs.exists == 'true'
+        if: steps.check-cluster.outputs.exists == 'true' && steps.check-helm-release.outputs.exists == 'true'
         run: |
-          kubectl get pods -n default
+          helm list -n default
+          kubectl get pods -n default -l app=crm-app
           kubectl get services -n default
