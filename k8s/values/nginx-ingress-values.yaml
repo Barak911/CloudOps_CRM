@@ -1,0 +1,34 @@
+# NGINX Ingress Controller Helm Values
+# Optimized for AWS EKS with single LoadBalancer
+
+controller:
+  # Use AWS NLB for better performance
+  service:
+    type: LoadBalancer
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+
+  # Resource limits for cost optimization
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  # Metrics for Prometheus scraping (endpoint available, but no ServiceMonitor CRD dependency)
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: false
+
+  # Enable snippet annotations for advanced routing
+  config:
+    use-forwarded-headers: "true"
+    proxy-body-size: "50m"
+
+# Disable default backend (use custom 404 handling)
+defaultBackend:
+  enabled: false

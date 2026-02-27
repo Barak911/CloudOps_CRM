@@ -1,0 +1,14 @@
+# Override values for Prometheus stack when using Nginx Ingress
+# Use with: helm upgrade --install prometheus ... -f prometheus-values.yaml -f prometheus-values-ingress.yaml
+
+grafana:
+  # Use ClusterIP (Ingress handles external access)
+  service:
+    type: ClusterIP
+    port: 80
+
+  # Configure Grafana to work behind reverse proxy at /grafana path
+  grafana.ini:
+    server:
+      root_url: "%(protocol)s://%(domain)s/grafana/"
+      serve_from_sub_path: true

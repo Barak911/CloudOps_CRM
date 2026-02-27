@@ -1,0 +1,197 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crm-app-dashboard
+  namespace: monitoring
+  labels:
+    # Label that Grafana sidecar watches for
+    grafana_dashboard: "1"
+  annotations:
+    # Folder where dashboard will appear in Grafana
+    grafana_folder: "CRM Application"
+data:
+  crm-dashboard.json: |
+    {
+      "title": "CRM Application Metrics",
+      "uid": "crm-app-metrics",
+      "tags": ["crm", "flask", "application"],
+      "timezone": "browser",
+      "schemaVersion": 16,
+      "version": 1,
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "title": "HTTP Request Rate",
+          "type": "graph",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "rate(flask_http_request_total{job=\"crm-app\"}[5m])",
+              "legendFormat": "{{method}} {{status}}",
+              "refId": "A"
+            }
+          ],
+          "yaxes": [
+            {"format": "reqps", "label": "Requests/sec"},
+            {"format": "short"}
+          ],
+          "xaxis": {"mode": "time"},
+          "lines": true,
+          "fill": 1,
+          "linewidth": 2,
+          "pointradius": 5,
+          "legend": {"show": true, "values": true, "current": true}
+        },
+        {
+          "id": 2,
+          "title": "HTTP Request Duration (p95)",
+          "type": "graph",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, rate(flask_http_request_duration_seconds_bucket{job=\"crm-app\"}[5m]))",
+              "legendFormat": "{{method}} {{path}}",
+              "refId": "A"
+            }
+          ],
+          "yaxes": [
+            {"format": "s", "label": "Duration"},
+            {"format": "short"}
+          ],
+          "xaxis": {"mode": "time"},
+          "lines": true,
+          "fill": 1,
+          "linewidth": 2,
+          "legend": {"show": true, "values": true, "current": true}
+        },
+        {
+          "id": 3,
+          "title": "Total HTTP Requests by Status Code",
+          "type": "stat",
+          "gridPos": {"h": 6, "w": 8, "x": 0, "y": 8},
+          "targets": [
+            {
+              "expr": "sum by (status) (flask_http_request_total{job=\"crm-app\"})",
+              "legendFormat": "{{status}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "graphMode": "area",
+            "colorMode": "value",
+            "orientation": "auto"
+          }
+        },
+        {
+          "id": 4,
+          "title": "Error Rate (5xx)",
+          "type": "stat",
+          "gridPos": {"h": 6, "w": 8, "x": 8, "y": 8},
+          "targets": [
+            {
+              "expr": "rate(flask_http_request_total{job=\"crm-app\",status=~\"5..\"}[5m])",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "graphMode": "area",
+            "colorMode": "value",
+            "orientation": "auto"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": 0, "color": "green"},
+                  {"value": 0.1, "color": "yellow"},
+                  {"value": 1, "color": "red"}
+                ]
+              }
+            }
+          }
+        },
+        {
+          "id": 5,
+          "title": "Request Count by Endpoint",
+          "type": "stat",
+          "gridPos": {"h": 6, "w": 8, "x": 16, "y": 8},
+          "targets": [
+            {
+              "expr": "sum by (path) (flask_http_request_total{job=\"crm-app\"})",
+              "legendFormat": "{{path}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "graphMode": "area",
+            "colorMode": "value",
+            "orientation": "horizontal"
+          }
+        },
+        {
+          "id": 6,
+          "title": "HTTP Methods Distribution",
+          "type": "piechart",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 14},
+          "targets": [
+            {
+              "expr": "sum by (method) (flask_http_request_total{job=\"crm-app\"})",
+              "legendFormat": "{{method}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "legend": {"displayMode": "table", "placement": "right"},
+            "pieType": "pie"
+          }
+        },
+        {
+          "id": 7,
+          "title": "Average Request Duration",
+          "type": "graph",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 14},
+          "targets": [
+            {
+              "expr": "rate(flask_http_request_duration_seconds_sum{job=\"crm-app\"}[5m]) / rate(flask_http_request_duration_seconds_count{job=\"crm-app\"}[5m])",
+              "legendFormat": "{{method}} {{path}}",
+              "refId": "A"
+            }
+          ],
+          "yaxes": [
+            {"format": "s", "label": "Avg Duration"},
+            {"format": "short"}
+          ],
+          "xaxis": {"mode": "time"},
+          "lines": true,
+          "fill": 1,
+          "linewidth": 2
+        },
+        {
+          "id": 8,
+          "title": "Application Info",
+          "type": "stat",
+          "gridPos": {"h": 4, "w": 24, "x": 0, "y": 22},
+          "targets": [
+            {
+              "expr": "crm_app_info{job=\"crm-app\"}",
+              "legendFormat": "Version: {{version}} | Environment: {{environment}}",
+              "refId": "A"
+            }
+          ],
+          "options": {
+            "graphMode": "none",
+            "colorMode": "background",
+            "orientation": "auto"
+          }
+        }
+      ],
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "timepicker": {
+        "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h"]
+      }
+    }

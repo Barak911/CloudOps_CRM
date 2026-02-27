@@ -1,0 +1,34 @@
+apiVersion: v2
+name: crm-stack
+description: Umbrella Helm chart for CRM application with MongoDB database and EFK logging stack
+type: application
+version: 2.0.0
+appVersion: "2.0"
+
+dependencies:
+  # Application Layer
+  - name: crm-app
+    version: "1.0.0"
+    repository: "file://./charts/crm-app"
+    condition: crm-app.enabled
+
+  - name: mongodb
+    version: "1.0.0"
+    repository: "file://./charts/mongodb"
+    condition: mongodb.enabled
+
+  # Logging Infrastructure Layer
+  - name: elasticsearch
+    version: 8.5.1
+    repository: https://helm.elastic.co
+    condition: elasticsearch.enabled
+
+  - name: kibana
+    version: 8.5.1
+    repository: https://helm.elastic.co
+    condition: kibana.enabled
+
+  - name: fluentd
+    version: 0.5.2
+    repository: https://fluent.github.io/helm-charts
+    condition: fluentd.enabled

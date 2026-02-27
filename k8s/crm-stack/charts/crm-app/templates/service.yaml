@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crm-app.fullname" . }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "crm-app.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+  - port: {{ .Values.service.port }}
+    targetPort: {{ .Values.service.targetPort }}
+    protocol: TCP
+    name: http
+  selector:
+    {{- include "crm-app.selectorLabels" . | nindent 4 }}

@@ -1,0 +1,25 @@
+# Override values when using Nginx Ingress Controller
+# Use with: helm upgrade --install crm-stack . -f values.yaml -f values-ingress.yaml
+
+# CRM Application - use ClusterIP (Ingress handles external access)
+crm-app:
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 5000
+
+# Kibana - use ClusterIP (Ingress handles external access)
+kibana:
+  service:
+    type: ClusterIP
+    port: 5601
+
+  # Configure Kibana to work behind a reverse proxy at /kibana path
+  kibanaConfig:
+    kibana.yml: |
+      server.basePath: "/kibana"
+      server.rewriteBasePath: true
+      server.publicBaseUrl: "http://localhost/kibana"
+
+  # Must match basePath for health checks to work
+  healthCheckPath: "/kibana/app/kibana"

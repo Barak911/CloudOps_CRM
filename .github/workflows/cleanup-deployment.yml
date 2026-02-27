@@ -1,0 +1,508 @@
+name: Cleanup Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name (leave empty to use EKS_CLUSTER_NAME secret)'
+        required: false
+        default: ''
+      confirm_deletion:
+        description: 'Type "DELETE" to confirm deletion'
+        required: true
+      delete_pvcs:
+        description: 'Delete Persistent Volume Claims (data will be lost!)'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  AWS_REGION: ${{ github.event.inputs.aws_region || 'us-east-1' }}
+  EKS_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || secrets.EKS_CLUSTER_NAME }}
+  RELEASE_NAME: crm-stack
+
+jobs:
+  # Job 1: Cleanup Kubernetes Resources
+  cleanup-kubernetes:
+    name: Cleanup Kubernetes Resources
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Verify Deletion Confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm_deletion }}" != "DELETE" ]; then
+            echo "❌ Deletion not confirmed. You must type 'DELETE' to proceed."
+            exit 1
+          fi
+          echo "✅ Deletion confirmed"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          echo "✅ Connected to EKS cluster"
+
+      - name: List Current Resources
+        run: |
+          echo "=== Current Kubernetes Resources ==="
+          echo ""
+          echo "Helm Releases (all namespaces):"
+          helm list -A || echo "No Helm releases found"
+          echo ""
+          echo "ArgoCD Applications:"
+          kubectl get applications -n argocd 2>/dev/null || echo "No ArgoCD applications found"
+          echo ""
+          echo "All Resources:"
+          kubectl get all -n default
+          echo ""
+          echo "Persistent Volume Claims:"
+          kubectl get pvc -n default
+          echo ""
+          echo "Services (especially LoadBalancers):"
+          kubectl get svc -n default -o wide
+
+      - name: Delete ArgoCD Applications
+        run: |
+          echo "🔥 Deleting all ArgoCD Application CRDs..."
+          echo "This prevents ArgoCD from re-creating resources after we delete them"
+          echo ""
+
+          # Delete all ArgoCD Applications (this triggers finalizers that clean up child resources)
+          if kubectl get applications -n argocd >/dev/null 2>&1; then
+            # Remove finalizers first to prevent stuck deletions, then delete
+            for app in $(kubectl get applications -n argocd -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+              echo "Removing finalizer and deleting Application: $app"
+              kubectl patch application $app -n argocd --type json -p '[{"op":"remove","path":"/metadata/finalizers"}]' 2>/dev/null || true
+              kubectl delete application $app -n argocd --ignore-not-found=true || true
+            done
+            echo "✅ ArgoCD Applications deleted"
+          else
+            echo "⚠️  No ArgoCD Applications found (or ArgoCD not installed)"
+          fi
+
+      - name: Uninstall ArgoCD
+        run: |
+          echo "🔥 Uninstalling ArgoCD..."
+
+          if helm list -n argocd | grep -q "argocd"; then
+            helm uninstall argocd -n argocd --timeout=5m || true
+            echo "✅ ArgoCD Helm release uninstalled"
+          else
+            echo "⚠️  ArgoCD Helm release not found"
+          fi
+
+          # Clean up ArgoCD namespace resources
+          kubectl delete ingress --all -n argocd --ignore-not-found=true || true
+          kubectl delete namespace argocd --ignore-not-found=true --wait=false || true
+          echo "✅ ArgoCD namespace cleanup initiated"
+
+      - name: Delete LoadBalancer Services First (Critical!)
+        run: |
+          echo "🔥 Deleting LoadBalancer services to prevent orphaned AWS ELBs..."
+
+          # Delete LoadBalancers from all namespaces
+          for NS in default monitoring ingress-nginx; do
+            echo ""
+            echo "=== Checking namespace: $NS ==="
+
+            LB_SERVICES=$(kubectl get svc -n $NS -o json 2>/dev/null | jq -r '.items[] | select(.spec.type=="LoadBalancer") | .metadata.name' || echo "")
+
+            if [ -z "$LB_SERVICES" ]; then
+              echo "✅ No LoadBalancer services found in $NS"
+            else
+              echo "Found LoadBalancer services in $NS:"
+              echo "$LB_SERVICES"
+              echo ""
+
+              for svc in $LB_SERVICES; do
+                echo "Deleting LoadBalancer service: $svc in $NS"
+                kubectl delete svc $svc -n $NS --wait=true --timeout=300s || echo "Failed to delete $svc"
+              done
+
+              echo "✅ LoadBalancer services deleted from $NS"
+            fi
+          done
+
+      - name: Wait for AWS ELBs to be Deleted
+        run: |
+          echo "⏳ Waiting for AWS Classic Load Balancers to be fully deleted (60 seconds)..."
+          sleep 60
+
+          echo "Checking for remaining Classic Load Balancers..."
+          aws elb describe-load-balancers --region ${{ env.AWS_REGION }} \
+            --query 'LoadBalancerDescriptions[].LoadBalancerName' \
+            --output table || echo "No Classic ELBs found (this is good!)"
+
+      - name: Cleanup Problematic Resources Before Uninstall
+        run: |
+          echo "🧹 Comprehensive cleanup of problematic resources..."
+
+          # 1. Delete ALL failed/error pods (these accumulate from failed hooks)
+          echo ""
+          echo "=== Deleting Failed/Error Pods ==="
+          FAILED_PODS=$(kubectl get pods -n default --field-selector=status.phase=Failed -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+          if [ -n "$FAILED_PODS" ]; then
+            echo "Found failed pods: $FAILED_PODS"
+            kubectl delete pods -n default --field-selector=status.phase=Failed --ignore-not-found=true || true
+          fi
+
+          # Delete pods in Error status (different from Failed phase)
+          ERROR_PODS=$(kubectl get pods -n default | grep -E "Error|CrashLoopBackOff|ImagePullBackOff" | awk '{print $1}' || echo "")
+          if [ -n "$ERROR_PODS" ]; then
+            echo "Found error pods: $ERROR_PODS"
+            for pod in $ERROR_PODS; do
+              kubectl delete pod $pod -n default --ignore-not-found=true --grace-period=0 --force || true
+            done
+          fi
+          echo "✅ Failed/Error pods cleaned up"
+
+          # 2. Delete ALL completed jobs (including old hook jobs)
+          echo ""
+          echo "=== Deleting Completed/Failed Jobs ==="
+          kubectl delete jobs --all -n default --ignore-not-found=true || true
+          echo "✅ Jobs cleaned up"
+
+          # 3. Delete ALL Kibana-related resources
+          echo ""
+          echo "=== Deleting Kibana Resources ==="
+          kubectl delete role,rolebinding,serviceaccount,configmap,job -l app=kibana -n default --ignore-not-found=true || true
+
+          # Delete Kibana hook pods by name pattern (they don't always have labels)
+          KIBANA_HOOK_PODS=$(kubectl get pods -n default --no-headers | grep -E "pre-install.*kibana|post-delete.*kibana|pre-upgrade.*kibana" | awk '{print $1}' || echo "")
+          if [ -n "$KIBANA_HOOK_PODS" ]; then
+            echo "Found Kibana hook pods: $KIBANA_HOOK_PODS"
+            for pod in $KIBANA_HOOK_PODS; do
+              kubectl delete pod $pod -n default --ignore-not-found=true --grace-period=0 --force || true
+            done
+          fi
+
+          # Delete Kibana secrets
+          kubectl delete secret crm-stack-kibana-es-token -n default --ignore-not-found=true || true
+          kubectl delete secret $RELEASE_NAME-kibana-es-token -n default --ignore-not-found=true || true
+          echo "✅ Kibana resources cleaned up"
+
+          # 4. Delete Elasticsearch hook resources
+          echo ""
+          echo "=== Deleting Elasticsearch Hook Resources ==="
+          kubectl delete jobs -l app=elasticsearch-master -n default --ignore-not-found=true || true
+          ES_HOOK_PODS=$(kubectl get pods -n default --no-headers | grep -E "pre-install.*elastic|post-delete.*elastic" | awk '{print $1}' || echo "")
+          if [ -n "$ES_HOOK_PODS" ]; then
+            for pod in $ES_HOOK_PODS; do
+              kubectl delete pod $pod -n default --ignore-not-found=true --grace-period=0 --force || true
+            done
+          fi
+          echo "✅ Elasticsearch hook resources cleaned up"
+
+          # 5. Clean up any stuck terminating pods
+          echo ""
+          echo "=== Force Deleting Stuck Terminating Pods ==="
+          TERMINATING_PODS=$(kubectl get pods -n default | grep Terminating | awk '{print $1}' || echo "")
+          if [ -n "$TERMINATING_PODS" ]; then
+            echo "Found terminating pods: $TERMINATING_PODS"
+            for pod in $TERMINATING_PODS; do
+              kubectl delete pod $pod -n default --grace-period=0 --force --ignore-not-found=true || true
+            done
+          fi
+          echo "✅ Stuck pods cleaned up"
+
+          # 6. Clean up orphaned ConfigMaps and Secrets from previous deployments
+          echo ""
+          echo "=== Cleaning Orphaned ConfigMaps/Secrets ==="
+          kubectl delete configmap -l app.kubernetes.io/instance=$RELEASE_NAME -n default --ignore-not-found=true || true
+          kubectl delete configmap crm-stack-kibana-helm-scripts -n default --ignore-not-found=true || true
+          echo "✅ Orphaned resources cleaned up"
+
+          echo ""
+          echo "✅ Comprehensive cleanup complete"
+
+      - name: Uninstall Helm Releases
+        run: |
+          echo "🔥 Uninstalling all Helm releases..."
+
+          # 1. Uninstall CRM stack (default namespace)
+          echo ""
+          echo "=== Uninstalling $RELEASE_NAME (default namespace) ==="
+          if helm list -n default | grep -q "$RELEASE_NAME"; then
+            helm uninstall $RELEASE_NAME -n default --no-hooks --timeout=5m || true
+            echo "✅ Helm release '$RELEASE_NAME' uninstalled"
+          else
+            echo "⚠️  Helm release '$RELEASE_NAME' not found"
+          fi
+
+          # 2. Uninstall Prometheus stack (monitoring namespace)
+          echo ""
+          echo "=== Uninstalling prometheus (monitoring namespace) ==="
+          if helm list -n monitoring | grep -q "prometheus"; then
+            helm uninstall prometheus -n monitoring --timeout=5m || true
+            echo "✅ Prometheus stack uninstalled"
+          else
+            echo "⚠️  Prometheus release not found"
+          fi
+
+          # 3. Uninstall Nginx Ingress Controller (ingress-nginx namespace)
+          echo ""
+          echo "=== Uninstalling ingress-nginx (ingress-nginx namespace) ==="
+          if helm list -n ingress-nginx | grep -q "ingress-nginx"; then
+            helm uninstall ingress-nginx -n ingress-nginx --timeout=5m || true
+            echo "✅ Nginx Ingress Controller uninstalled"
+          else
+            echo "⚠️  Nginx Ingress release not found"
+          fi
+
+          # Clean up orphaned resources
+          echo ""
+          echo "=== Cleaning up orphaned resources ==="
+          kubectl delete all -l app.kubernetes.io/instance=$RELEASE_NAME -n default --ignore-not-found=true || true
+          kubectl delete ingress --all -n default --ignore-not-found=true || true
+          kubectl delete ingress --all -n monitoring --ignore-not-found=true || true
+
+      - name: Delete Persistent Volume Claims
+        if: github.event.inputs.delete_pvcs == 'true'
+        run: |
+          echo "🔥 Deleting Persistent Volume Claims (PVCs)..."
+          echo "⚠️  WARNING: This will delete all persistent data!"
+
+          # Delete PVCs from all namespaces
+          for NS in default monitoring; do
+            echo ""
+            echo "=== Checking namespace: $NS ==="
+
+            PVCS=$(kubectl get pvc -n $NS -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+
+            if [ -z "$PVCS" ]; then
+              echo "✅ No PVCs found in $NS"
+            else
+              echo "Found PVCs in $NS:"
+              kubectl get pvc -n $NS
+              echo ""
+
+              kubectl delete pvc --all -n $NS --wait=true --timeout=300s || echo "Failed to delete some PVCs in $NS"
+              echo "✅ PVCs deleted from $NS"
+            fi
+          done
+
+      - name: Delete ECR Images (Critical for Terraform Destroy!)
+        run: |
+          echo "🔥 Deleting all images from ECR repository..."
+          echo "⚠️  This is required for terraform destroy to succeed!"
+
+          ECR_REPO="crm-app"
+
+          # Get all image IDs in JSON format
+          IMAGE_IDS=$(aws ecr list-images \
+            --repository-name $ECR_REPO \
+            --region ${{ env.AWS_REGION }} \
+            --query 'imageIds' \
+            --output json 2>/dev/null || echo "[]")
+
+          # Check if there are any images
+          IMAGE_COUNT=$(echo "$IMAGE_IDS" | jq 'length')
+
+          if [ "$IMAGE_COUNT" -eq 0 ]; then
+            echo "✅ No images found in ECR repository"
+          else
+            echo "Found $IMAGE_COUNT image(s) in ECR repository: $ECR_REPO"
+
+            # Delete all images using JSON image IDs
+            aws ecr batch-delete-image \
+              --repository-name $ECR_REPO \
+              --region ${{ env.AWS_REGION }} \
+              --image-ids "$IMAGE_IDS" || echo "⚠️  Some images may have failed to delete"
+
+            echo "✅ ECR images deleted"
+          fi
+
+      - name: Verify Kubernetes Cleanup
+        run: |
+          echo "=== Verification: Remaining Resources ==="
+          echo ""
+          echo "Helm Releases:"
+          helm list -n default || echo "None (expected)"
+          echo ""
+          echo "Pods:"
+          kubectl get pods -n default || echo "None"
+          echo ""
+          echo "Services:"
+          kubectl get svc -n default || echo "None (except kubernetes default)"
+          echo ""
+          echo "PVCs:"
+          kubectl get pvc -n default || echo "None (expected)"
+          echo ""
+          echo "Deployments:"
+          kubectl get deployments -n default || echo "None"
+          echo ""
+          echo "StatefulSets:"
+          kubectl get statefulsets -n default || echo "None"
+
+      - name: Check for Kubernetes-Created AWS Resources
+        run: |
+          echo "=== Checking for Kubernetes-Created AWS Resources ==="
+          echo ""
+          echo "Security Groups in VPC:"
+          VPC_ID=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} --query 'cluster.resourcesVpcConfig.vpcId' --output text)
+
+          if [ -n "$VPC_ID" ]; then
+            echo "VPC ID: $VPC_ID"
+            aws ec2 describe-security-groups \
+              --region ${{ env.AWS_REGION }} \
+              --filters "Name=vpc-id,Values=$VPC_ID" \
+              --query 'SecurityGroups[?contains(GroupName, `k8s`) || contains(Description, `Kubernetes`)].{ID:GroupId,Name:GroupName,Description:Description}' \
+              --output table || echo "No Kubernetes-created security groups found"
+          fi
+
+          echo ""
+          echo "Classic Load Balancers:"
+          aws elb describe-load-balancers --region ${{ env.AWS_REGION }} \
+            --query 'LoadBalancerDescriptions[].LoadBalancerName' \
+            --output table || echo "No Classic ELBs found (expected)"
+
+      - name: Generate Cleanup Report
+        run: |
+          echo "# 🧹 Kubernetes Cleanup Summary"
+          echo ""
+          echo "## Cluster Information"
+          echo "- **Cluster**: ${{ env.EKS_CLUSTER_NAME }}"
+          echo "- **Region**: ${{ env.AWS_REGION }}"
+          echo "- **Helm Release**: $RELEASE_NAME"
+          echo ""
+          echo "## Cleanup Actions Completed"
+          echo "- ✅ ArgoCD Applications deleted"
+          echo "- ✅ ArgoCD uninstalled"
+          echo "- ✅ LoadBalancer services deleted (prevents orphaned ELBs)"
+          echo "- ✅ Helm releases uninstalled (CRM stack, Prometheus, Nginx Ingress)"
+          echo "- ✅ Persistent Volume Claims deleted: ${{ github.event.inputs.delete_pvcs }}"
+          echo "- ✅ ECR images deleted (required for terraform destroy)"
+          echo ""
+          echo "## Next Steps"
+          echo ""
+          echo "### Option 1: Destroy Infrastructure with Terraform"
+          echo ""
+          echo "Now that Kubernetes resources are cleaned up, you can safely run terraform destroy:"
+          echo ""
+          echo '```bash'
+          echo "cd infra"
+          echo "export AWS_PROFILE=<your-profile>"
+          echo "terraform destroy -auto-approve"
+          echo '```'
+          echo ""
+          echo "### Option 2: Keep Infrastructure, Redeploy Application"
+          echo ""
+          echo "If you want to keep the EKS cluster and just redeploy:"
+          echo ""
+          echo '```bash'
+          echo "# Trigger bootstrap-cluster workflow from GitHub Actions"
+          echo '```'
+          echo ""
+          echo "## Manual Cleanup (if needed)"
+          echo ""
+          echo "If terraform destroy fails, manually delete these in order:"
+          echo ""
+          echo "1. **Check for remaining LoadBalancers:**"
+          echo '```bash'
+          echo "aws elb describe-load-balancers --region ${{ env.AWS_REGION }}"
+          echo '```'
+          echo ""
+          echo "2. **Check for Kubernetes security groups:**"
+          echo '```bash'
+          echo "aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \\"
+          echo '  --filters "Name=vpc-id,Values=<VPC_ID>" \\'
+          echo '  --query "SecurityGroups[?contains(GroupName, \`k8s\`)].GroupId"'
+          echo '```'
+          echo ""
+          echo "3. **Delete orphaned security groups:**"
+          echo '```bash'
+          echo "aws ec2 delete-security-group --group-id <sg-id> --region ${{ env.AWS_REGION }}"
+          echo '```'
+          echo ""
+          echo "---"
+          echo "✅ Kubernetes Cleanup Complete!"
+          echo ""
+          echo "⚠️  **IMPORTANT**: Wait 2-3 minutes before running terraform destroy"
+          echo "to ensure all AWS resources are fully deleted."
+
+  # Job 2: Verify AWS Resources Cleanup (runs after Kubernetes cleanup)
+  verify-aws-cleanup:
+    name: Verify AWS Resources Ready for Terraform Destroy
+    runs-on: ubuntu-latest
+    needs: cleanup-kubernetes
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Wait for AWS Resource Propagation
+        run: |
+          echo "⏳ Waiting for AWS resources to fully propagate (120 seconds)..."
+          sleep 120
+
+      - name: Final AWS Resources Check
+        run: |
+          echo "=== Final AWS Resources Check ==="
+          echo ""
+
+          echo "1. Classic Load Balancers:"
+          ELB_COUNT=$(aws elb describe-load-balancers --region ${{ env.AWS_REGION }} --query 'length(LoadBalancerDescriptions)' --output text 2>/dev/null || echo "0")
+          echo "   Count: $ELB_COUNT"
+          if [ "$ELB_COUNT" != "0" ]; then
+            echo "   ⚠️  WARNING: There are still Classic Load Balancers!"
+            aws elb describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancerDescriptions[].LoadBalancerName' --output table
+          else
+            echo "   ✅ No Classic Load Balancers found"
+          fi
+          echo ""
+
+          echo "2. Application/Network Load Balancers:"
+          ALB_COUNT=$(aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} --query 'length(LoadBalancers)' --output text 2>/dev/null || echo "0")
+          echo "   Count: $ALB_COUNT"
+          if [ "$ALB_COUNT" != "0" ]; then
+            echo "   ⚠️  WARNING: There are still ALB/NLBs!"
+            aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} --query 'LoadBalancers[].LoadBalancerName' --output table
+          else
+            echo "   ✅ No ALB/NLBs found"
+          fi
+          echo ""
+
+          echo "3. EKS Cluster Status:"
+          aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }} \
+            --query 'cluster.{Name:name,Status:status,Version:version}' \
+            --output table || echo "   Cluster not found or inaccessible"
+          echo ""
+
+          echo "4. NAT Gateways:"
+          aws ec2 describe-nat-gateways --region ${{ env.AWS_REGION }} \
+            --query 'NatGateways[?State!=`deleted`].{ID:NatGatewayId,State:State}' \
+            --output table || echo "   None found"
+          echo ""
+
+          echo "=== Terraform Destroy Readiness ==="
+          if [ "$ELB_COUNT" == "0" ] && [ "$ALB_COUNT" == "0" ]; then
+            echo "✅ READY: You can now safely run terraform destroy"
+            echo ""
+            echo "Run this command:"
+            echo "  cd infra && terraform destroy -auto-approve"
+          else
+            echo "⚠️  NOT READY: Please wait for Load Balancers to be deleted first"
+            echo ""
+            echo "Wait a few minutes and check again, or manually delete the Load Balancers"
+          fi

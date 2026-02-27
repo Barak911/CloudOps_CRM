@@ -1,0 +1,68 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+venv/
+.venv/
+ENV/
+
+# === Testing ===
+.pytest_cache/
+.coverage
+htmlcov/
+
+# === Environment ===
+.env
+.env.local
+
+# === Terraform ===
+infra/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+tfplan
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# === Helm ===
+k8s/**/Chart.lock
+
+# === Certificates and Secrets ===
+certs/
+*.key
+*.crt
+*.pem
+secrets/
+*.secret
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === AWS ===
+.aws/
+
+# === Temp ===
+temp/
+tmp/
+scratch/
+
+# === Project ===
+CHANGELOG.md

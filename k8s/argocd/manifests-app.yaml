@@ -1,0 +1,23 @@
+# ArgoCD Application: Plain K8s manifests (Ingress, ServiceMonitor, Dashboards)
+# Syncs all YAML files from k8s/manifests/ as raw Kubernetes resources
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crm-manifests
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/REPLACE_OWNER/CloudOps_CRM.git
+    targetRevision: main
+    path: k8s/manifests
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - ServerSideApply=true

@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: crm-app-metrics
+  namespace: default
+  labels:
+    app: crm-app
+    # Label for Prometheus Operator to discover this ServiceMonitor
+    release: prometheus
+spec:
+  # Use 'app' label from the Service as the job name in Prometheus
+  # This ensures job="crm-app" matches Grafana dashboard queries
+  jobLabel: app
+  selector:
+    matchLabels:
+      app: crm-app
+  # Explicitly set namespace selector for cross-namespace discovery
+  namespaceSelector:
+    matchNames:
+      - default
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+      # Honor labels from the target to preserve app-specific labels
+      honorLabels: true

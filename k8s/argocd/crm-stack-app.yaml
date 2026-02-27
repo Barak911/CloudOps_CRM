@@ -1,0 +1,38 @@
+# ArgoCD Application: CRM Umbrella Chart (crm-app + mongodb + EFK)
+# CI pipeline auto-updates image.tag in k8s/crm-stack/values.yaml
+# Multi-source: local Helm chart + separate values ref (consistent with other apps)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: crm-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/REPLACE_OWNER/CloudOps_CRM.git
+      targetRevision: main
+      path: k8s/crm-stack
+      helm:
+        valueFiles:
+          - $values/k8s/values/values-ingress.yaml
+    - repoURL: https://github.com/REPLACE_OWNER/CloudOps_CRM.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

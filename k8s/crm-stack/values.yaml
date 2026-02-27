@@ -1,0 +1,464 @@
+# Global values shared across all subcharts
+global:
+  namespace: default
+  environment: production
+
+  # Common labels applied to all resources
+  labels:
+    project: crm
+    managed-by: helm
+
+  # MongoDB connection details
+  mongodb:
+    host: mongodb
+    port: 27017
+    database: crm_db
+
+# CRM Application configuration
+crm-app:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: REPLACE_WITH_ECR_URL/crm-app
+    tag: latest
+    pullPolicy: Always
+
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 5000
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+  healthCheck:
+    enabled: true
+    path: /health
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      timeoutSeconds: 3
+
+# MongoDB configuration
+mongodb:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: mongo
+    tag: "7.0"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 27017
+    headless: true
+
+  persistence:
+    enabled: true
+    size: 5Gi
+    accessMode: ReadWriteOnce
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  healthCheck:
+    enabled: true
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      timeoutSeconds: 3
+
+# ===========================
+# Logging Infrastructure (EFK Stack)
+# ===========================
+
+# Elasticsearch Configuration
+elasticsearch:
+  enabled: true
+  replicas: 1
+  minimumMasterNodes: 1
+
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+
+  esJavaOpts: "-Xmx512m -Xms512m"
+
+  secret:
+    enabled: true
+    # Password is set during deployment via --set or GitHub Actions secret ES_PASSWORD
+
+  persistence:
+    enabled: true
+
+  volumeClaimTemplate:
+    resources:
+      requests:
+        storage: 5Gi
+
+  clusterHealthCheckParams: "wait_for_status=yellow&timeout=1s"
+
+  service:
+    type: ClusterIP
+
+  # Use chart's built-in certificate generation
+  # This creates certificates automatically with proper SANs
+  createCert: true
+
+  # Security configuration - let chart handle cert paths
+  esConfig:
+    elasticsearch.yml: |
+      xpack.security.enabled: true
+      xpack.security.transport.ssl.enabled: true
+      xpack.security.transport.ssl.verification_mode: certificate
+      xpack.security.http.ssl.enabled: true
+
+# Kibana Configuration
+# NOTE: The Elastic Kibana Helm chart (v8.5.1) is ARCHIVED and has known bugs:
+#   - Issue #1766: Pre-upgrade hook fails with "secret already exists"
+#   - The hook uses POST instead of PUT to create K8s secrets
+# Workaround: CI/CD pipeline deletes the token secret before upgrade and uses --no-hooks
+kibana:
+  enabled: true
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "250m"
+      memory: "512Mi"
+
+  service:
+    type: ClusterIP
+    port: 5601
+
+  # HTTPS configuration - points to Elasticsearch with HTTPS
+  elasticsearchHosts: "https://elasticsearch-master:9200"
+
+  # Kibana will use chart-generated elasticsearch-master-certs secret
+  # No custom configuration needed - chart handles it automatically
+
+  readinessProbe:
+    initialDelaySeconds: 60
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+  livenessProbe:
+    initialDelaySeconds: 90
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+# Fluentd Configuration
+# Stage 2: Enabled - Elasticsearch is now running with HTTPS
+# Using official daemonset config (env-driven) instead of custom fileConfigs
+fluentd:
+  enabled: true
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+  # FIX: Increase initialDelaySeconds for probes to give Fluentd time to:
+  # 1. Connect to Elasticsearch via HTTPS
+  # 2. Initialize Prometheus metrics endpoint on port 24231
+  # 3. Start tailing container log files
+  # Default was 0, causing "connection refused" on /metrics endpoint
+  livenessProbe:
+    initialDelaySeconds: 60
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+  readinessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+  serviceAccount:
+    create: true
+
+  rbac:
+    create: true
+
+  # Mount Elasticsearch chart-generated CA certificate
+  # FIXED: Use volumes/volumeMounts (not extraVolumes/extraVolumeMounts)
+  volumes:
+    - name: elasticsearch-certs
+      secret:
+        secretName: elasticsearch-master-certs
+        defaultMode: 420   # 0644 in decimal
+
+  volumeMounts:
+    - name: elasticsearch-certs
+      mountPath: /fluentd/certs
+      readOnly: true
+
+  # Configure Elasticsearch output via environment variables
+  # The official daemonset image uses these to generate ES7-safe config
+  env:
+    - name: FLUENT_ELASTICSEARCH_HOST
+      value: "elasticsearch-master.default.svc"
+    - name: FLUENT_ELASTICSEARCH_PORT
+      value: "9200"
+    - name: FLUENT_ELASTICSEARCH_SCHEME
+      value: "https"
+    - name: FLUENT_ELASTICSEARCH_SSL_VERIFY
+      value: "true"
+    - name: FLUENT_ELASTICSEARCH_SSL_VERSION
+      value: "TLSv1_2"
+    - name: FLUENT_ELASTICSEARCH_CA_FILE
+      value: "/fluentd/certs/ca.crt"
+    - name: FLUENT_ELASTICSEARCH_USER
+      value: "elastic"
+    - name: FLUENT_ELASTICSEARCH_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: elasticsearch-master-credentials
+          key: password
+    - name: FLUENT_ELASTICSEARCH_LOGSTASH_PREFIX
+      value: "kubernetes"
+    - name: FLUENT_ELASTICSEARCH_LOGSTASH_FORMAT
+      value: "true"
+
+  # ECS-based logging configuration following Elasticsearch best practices
+  # Strategy: Normalize logs to ECS schema, use separate indices per app, parse JSON in ES ingest pipeline
+  # This prevents mapping conflicts by keeping 'message' as text and using namespaced fields
+  fileConfigs:
+    # 02_filters.conf: Kubernetes metadata enrichment + ECS normalization
+    02_filters.conf: |-
+      <label @KUBERNETES>
+        # Standard Kubernetes metadata enrichment
+        <filter kubernetes.**>
+          @type kubernetes_metadata
+          @id filter_kube_metadata
+          skip_labels false
+          skip_container_metadata false
+          skip_namespace_metadata true
+          skip_master_url true
+        </filter>
+
+        # Continue to @DISPATCH (required for label flow)
+        <match **>
+          @type relabel
+          @label @DISPATCH
+        </match>
+      </label>
+
+    # 03_dispatch.conf: Transform logs to ECS schema (log → message + service fields)
+    # REPLACES the default 03_dispatch.conf with our ECS transformation logic
+    # CRITICAL: Use renew_record to remove kubernetes/docker metadata that causes mapping conflicts
+    # Uses single filter with conditional Ruby logic to set service fields based on container name
+    03_dispatch.conf: |-
+      <label @DISPATCH>
+        # Single filter for all container logs - uses Ruby conditionals to set ECS fields
+        # This prevents the catch-all filter overwriting problem
+        <filter kubernetes.var.log.containers.**>
+          @type record_transformer
+          enable_ruby true
+          renew_record true
+          <record>
+            message ${record["log"]}
+            service.name ${cn = record.dig("kubernetes", "container_name") || ""; cn == "crm-app" ? "crm-app" : cn == "mongodb" ? "mongodb" : (cn.empty? ? "unknown" : cn)}
+            service.type ${cn = record.dig("kubernetes", "container_name") || ""; cn == "crm-app" ? "application" : cn == "mongodb" ? "database" : "infrastructure"}
+            event.dataset ${cn = record.dig("kubernetes", "container_name") || ""; cn == "crm-app" ? "crm.logs" : cn == "mongodb" ? "mongodb.logs" : "system.logs"}
+            host.name ${record.dig("kubernetes", "host") || "unknown"}
+            container.name ${record.dig("kubernetes", "container_name") || "unknown"}
+            kubernetes.pod.name ${record.dig("kubernetes", "pod_name") || "unknown"}
+            kubernetes.namespace ${record.dig("kubernetes", "namespace_name") || "default"}
+          </record>
+        </filter>
+
+        # Continue to @OUTPUT
+        <match **>
+          @type relabel
+          @label @OUTPUT
+        </match>
+      </label>
+
+    # 04_outputs.conf: Route logs to separate indices with ingest pipeline
+    # Uses ES ingest pipeline for JSON parsing, keeps message as text to avoid mapping conflicts
+    # Order matters: most specific matches first, catch-all last
+    04_outputs.conf: |-
+      <label @OUTPUT>
+        # Route MongoDB logs → logs-mongodb index
+        <match kubernetes.var.log.containers.mongodb-**>
+          @type elasticsearch
+          @id out_es_mongodb
+          @log_level info
+          host "#{ENV['FLUENT_ELASTICSEARCH_HOST']}"
+          port "#{ENV['FLUENT_ELASTICSEARCH_PORT']}"
+          scheme "#{ENV['FLUENT_ELASTICSEARCH_SCHEME']}"
+          ssl_verify true
+          ca_file "#{ENV['FLUENT_ELASTICSEARCH_CA_FILE']}"
+          user "#{ENV['FLUENT_ELASTICSEARCH_USER']}"
+          password "#{ENV['FLUENT_ELASTICSEARCH_PASSWORD']}"
+
+          # Use ingest pipeline for JSON parsing
+          pipeline logs-generic
+
+          # Use simple index name (template controls mapping)
+          logstash_format false
+          index_name logs-mongodb
+          include_tag_key true
+          tag_key @log_name
+
+          # Enable detailed error logging for troubleshooting
+          log_es_400_reason true
+
+          verify_es_version_at_startup true
+          reconnect_on_error true
+          reload_on_failure true
+          request_timeout 15s
+
+          <buffer>
+            @type memory
+            flush_mode interval
+            retry_type exponential_backoff
+            flush_thread_count 2
+            flush_interval 5s
+            retry_forever false
+            retry_max_interval 30s
+            retry_max_times 10
+            chunk_limit_size 2M
+            queue_limit_length 8
+            overflow_action drop_oldest_chunk
+          </buffer>
+        </match>
+
+        # Route CRM logs → logs-crm index
+        <match kubernetes.var.log.containers.crm-app-**>
+          @type elasticsearch
+          @id out_es_crm
+          @log_level info
+          host "#{ENV['FLUENT_ELASTICSEARCH_HOST']}"
+          port "#{ENV['FLUENT_ELASTICSEARCH_PORT']}"
+          scheme "#{ENV['FLUENT_ELASTICSEARCH_SCHEME']}"
+          ssl_verify true
+          ca_file "#{ENV['FLUENT_ELASTICSEARCH_CA_FILE']}"
+          user "#{ENV['FLUENT_ELASTICSEARCH_USER']}"
+          password "#{ENV['FLUENT_ELASTICSEARCH_PASSWORD']}"
+
+          # Use ingest pipeline for JSON parsing
+          pipeline logs-generic
+
+          # Use simple index name (template controls mapping)
+          logstash_format false
+          index_name logs-crm
+          include_tag_key true
+          tag_key @log_name
+
+          # Enable detailed error logging for troubleshooting
+          log_es_400_reason true
+
+          verify_es_version_at_startup true
+          reconnect_on_error true
+          reload_on_failure true
+          request_timeout 15s
+
+          <buffer>
+            @type memory
+            flush_mode interval
+            retry_type exponential_backoff
+            flush_thread_count 2
+            flush_interval 5s
+            retry_forever false
+            retry_max_interval 30s
+            retry_max_times 10
+            chunk_limit_size 2M
+            queue_limit_length 8
+            overflow_action drop_oldest_chunk
+          </buffer>
+        </match>
+
+        # Catch-all: System logs (Elasticsearch, Kibana, Fluentd) → logs-system index
+        <match kubernetes.var.log.containers.**>
+          @type elasticsearch
+          @id out_es_system
+          @log_level info
+          host "#{ENV['FLUENT_ELASTICSEARCH_HOST']}"
+          port "#{ENV['FLUENT_ELASTICSEARCH_PORT']}"
+          scheme "#{ENV['FLUENT_ELASTICSEARCH_SCHEME']}"
+          ssl_verify true
+          ca_file "#{ENV['FLUENT_ELASTICSEARCH_CA_FILE']}"
+          user "#{ENV['FLUENT_ELASTICSEARCH_USER']}"
+          password "#{ENV['FLUENT_ELASTICSEARCH_PASSWORD']}"
+
+          # Use ingest pipeline for JSON parsing
+          pipeline logs-generic
+
+          # Use simple index name (template controls mapping)
+          logstash_format false
+          index_name logs-system
+          include_tag_key true
+          tag_key @log_name
+
+          # Enable detailed error logging for troubleshooting
+          log_es_400_reason true
+
+          verify_es_version_at_startup true
+          reconnect_on_error true
+          reload_on_failure true
+          request_timeout 15s
+
+          <buffer>
+            @type memory
+            flush_mode interval
+            retry_type exponential_backoff
+            flush_thread_count 2
+            flush_interval 5s
+            retry_forever false
+            retry_max_interval 30s
+            retry_max_times 10
+            chunk_limit_size 2M
+            queue_limit_length 8
+            overflow_action drop_oldest_chunk
+          </buffer>
+        </match>
+      </label>
+
+  # Use official ES8-compatible image tag
+  image:
+    repository: "fluent/fluentd-kubernetes-daemonset"
+    tag: "v1.19-debian-elasticsearch8-1"
+    pullPolicy: IfNotPresent
+
+  tolerations:
+    - key: node-role.kubernetes.io/master
+      effect: NoSchedule
+    - key: node-role.kubernetes.io/control-plane
+      effect: NoSchedule

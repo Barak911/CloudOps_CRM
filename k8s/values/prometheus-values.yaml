@@ -1,0 +1,139 @@
+# kube-prometheus-stack Helm values
+# Optimized for cost-effective single-node EKS cluster
+
+# Prometheus configuration
+prometheus:
+  prometheusSpec:
+    # Resource limits for cost optimization
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
+    # Storage configuration - uses default gp3 StorageClass from Terraform
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+    # Retention period (reduced to 2d due to disk space constraints)
+    retention: 2d
+
+    # CRITICAL: Discover ServiceMonitors from ALL namespaces
+    # Prometheus runs in 'monitoring' namespace, CRM ServiceMonitor is in 'default' namespace
+    # Without these settings, cross-namespace discovery fails
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+
+    # Also discover PodMonitors from all namespaces (for future use)
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorNamespaceSelector: {}
+
+# Grafana configuration
+grafana:
+  enabled: true
+
+  # Admin password — MUST be set at deploy time:
+  #   --set grafana.adminPassword=<your-password>
+  # If not set, Grafana chart generates a random password stored in a k8s secret.
+
+  # Resource limits
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi
+
+  # Persistence for dashboards
+  persistence:
+    enabled: true
+    size: 5Gi
+
+  # Service configuration - ClusterIP for Ingress access
+  service:
+    type: ClusterIP
+    port: 80
+
+  # Configure Grafana to work behind Ingress at /grafana path
+  grafana.ini:
+    server:
+      root_url: "%(protocol)s://%(domain)s/grafana"
+      serve_from_sub_path: true
+
+  # Pre-installed dashboards
+  defaultDashboardsEnabled: true
+
+  # Enable sidecar for dashboard provisioning from ConfigMaps
+  # This automatically imports dashboards from ConfigMaps with label grafana_dashboard=1
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      # Search all namespaces for dashboard ConfigMaps
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+
+  # Datasources - use default configuration from chart
+  # The chart automatically configures Prometheus as datasource
+
+# AlertManager configuration (minimal for cost savings)
+alertmanager:
+  enabled: true
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 256Mi
+
+# Node exporter - monitors node metrics
+prometheus-node-exporter:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+
+# Kube-state-metrics - monitors Kubernetes objects
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 100m
+      memory: 256Mi
+
+# Disable components not needed for basic monitoring
+kubeApiServer:
+  enabled: true
+
+kubelet:
+  enabled: true
+
+kubeControllerManager:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+
+kubeEtcd:
+  enabled: false

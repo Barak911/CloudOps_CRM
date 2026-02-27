@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CloudOps CRM</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --text-dim: #94a3b8;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --danger: #ef4444;
+      --danger-hover: #dc2626;
+      --success: #22c55e;
+      --radius: 8px;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    header h1 { font-size: 1.5rem; font-weight: 700; }
+    header h1 span { color: var(--accent); }
+
+    .stats {
+      display: flex;
+      gap: 16px;
+      font-size: 0.85rem;
+      color: var(--text-dim);
+    }
+
+    .stats strong { color: var(--text); }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+
+    input, select {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      outline: none;
+    }
+
+    input:focus { border-color: var(--accent); }
+
+    #search { flex: 1; min-width: 200px; }
+
+    button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 0.9rem;
+      cursor: pointer;
+      font-weight: 500;
+      transition: background 0.15s;
+    }
+
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { background: var(--danger-hover); }
+    .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+    .btn-ghost:hover { background: var(--surface); color: var(--text); }
+    .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+
+    th {
+      background: rgba(255,255,255,0.03);
+      color: var(--text-dim);
+      font-weight: 600;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+
+    .actions { display: flex; gap: 6px; }
+
+    .empty {
+      text-align: center;
+      padding: 48px 16px;
+      color: var(--text-dim);
+    }
+
+    /* Modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 100;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .modal-overlay.active { display: flex; }
+
+    .modal {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      width: 90%;
+      max-width: 420px;
+    }
+
+    .modal h2 { margin-bottom: 16px; font-size: 1.1rem; }
+
+    .field { margin-bottom: 12px; }
+    .field label { display: block; margin-bottom: 4px; font-size: 0.8rem; color: var(--text-dim); }
+    .field input { width: 100%; }
+
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      padding: 10px 20px;
+      border-radius: var(--radius);
+      color: #fff;
+      font-size: 0.85rem;
+      z-index: 200;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .toast.show { opacity: 1; }
+    .toast.success { background: var(--success); }
+    .toast.error { background: var(--danger); }
+
+    .checkbox-col { width: 36px; }
+    input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1><span>CloudOps</span> CRM</h1>
+      <div class="stats" id="stats">Loading...</div>
+    </header>
+
+    <div class="toolbar">
+      <input type="text" id="search" placeholder="Search by name or email..." />
+      <button class="btn-danger btn-sm" id="bulkDeleteBtn" style="display:none" onclick="bulkDelete()">Delete Selected</button>
+      <button class="btn-primary" onclick="openModal()">+ Add Person</button>
+    </div>
+
+    <div id="tableWrap"></div>
+  </div>
+
+  <!-- Add/Edit Modal -->
+  <div class="modal-overlay" id="modal">
+    <div class="modal">
+      <h2 id="modalTitle">Add Person</h2>
+      <div class="field">
+        <label>Person ID</label>
+        <input type="text" id="f_pid" placeholder="unique-id" />
+      </div>
+      <div class="field">
+        <label>Name</label>
+        <input type="text" id="f_name" placeholder="Full name" />
+      </div>
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="f_email" placeholder="email@example.com" />
+      </div>
+      <div class="field">
+        <label>Phone</label>
+        <input type="text" id="f_phone" placeholder="555-1234" />
+      </div>
+      <div class="modal-actions">
+        <button class="btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn-primary" id="modalSave" onclick="savePerson()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let editingId = null;
+    let allPersons = [];
+    let selected = new Set();
+
+    // ── API helpers ───────────────────────────────────
+    const api = (path, opts) => fetch(path, opts).then(r => r.json().then(d => ({ok: r.ok, status: r.status, data: d})));
+
+    async function load() {
+      try {
+        const [personsRes, statsRes] = await Promise.all([
+          fetch('/person').then(r => r.json()),
+          fetch('/stats').then(r => r.json())
+        ]);
+        allPersons = Array.isArray(personsRes) ? personsRes : [];
+        document.getElementById('stats').innerHTML =
+          `<span>Total: <strong>${statsRes.total_persons ?? 0}</strong></span>`;
+        render(allPersons);
+      } catch (e) {
+        document.getElementById('stats').textContent = 'Error loading data';
+      }
+    }
+
+    // ── Render ────────────────────────────────────────
+    function render(persons) {
+      const wrap = document.getElementById('tableWrap');
+      if (!persons.length) {
+        wrap.innerHTML = '<div class="empty">No persons found. Click <strong>+ Add Person</strong> to get started.</div>';
+        return;
+      }
+
+      const rows = persons.map(p => `
+        <tr>
+          <td class="checkbox-col"><input type="checkbox" value="${p.person_id}" onchange="toggleSelect(this)" ${selected.has(p.person_id)?'checked':''}></td>
+          <td>${esc(p.person_id)}</td>
+          <td>${esc(p.name || '')}</td>
+          <td>${esc(p.email || '')}</td>
+          <td>${esc(p.phone || '')}</td>
+          <td class="actions">
+            <button class="btn-ghost btn-sm" onclick="openEdit('${esc(p.person_id)}')">Edit</button>
+            <button class="btn-danger btn-sm" onclick="del('${esc(p.person_id)}')">Delete</button>
+          </td>
+        </tr>`).join('');
+
+      wrap.innerHTML = `<table>
+        <thead><tr>
+          <th class="checkbox-col"><input type="checkbox" onchange="toggleAll(this)"></th>
+          <th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Actions</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+      document.getElementById('bulkDeleteBtn').style.display = selected.size ? '' : 'none';
+    }
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    // ── Search ────────────────────────────────────────
+    let searchTimer;
+    document.getElementById('search').addEventListener('input', function () {
+      clearTimeout(searchTimer);
+      const q = this.value.trim();
+      searchTimer = setTimeout(async () => {
+        if (!q) { render(allPersons); return; }
+        try {
+          const res = await fetch(`/person/search?q=${encodeURIComponent(q)}`).then(r => r.json());
+          render(Array.isArray(res) ? res : []);
+        } catch { render([]); }
+      }, 250);
+    });
+
+    // ── CRUD ──────────────────────────────────────────
+    function openModal() {
+      editingId = null;
+      document.getElementById('modalTitle').textContent = 'Add Person';
+      document.getElementById('f_pid').value = '';
+      document.getElementById('f_pid').disabled = false;
+      document.getElementById('f_name').value = '';
+      document.getElementById('f_email').value = '';
+      document.getElementById('f_phone').value = '';
+      document.getElementById('modal').classList.add('active');
+    }
+
+    function openEdit(pid) {
+      const p = allPersons.find(x => x.person_id === pid);
+      if (!p) return;
+      editingId = pid;
+      document.getElementById('modalTitle').textContent = 'Edit Person';
+      document.getElementById('f_pid').value = pid;
+      document.getElementById('f_pid').disabled = true;
+      document.getElementById('f_name').value = p.name || '';
+      document.getElementById('f_email').value = p.email || '';
+      document.getElementById('f_phone').value = p.phone || '';
+      document.getElementById('modal').classList.add('active');
+    }
+
+    function closeModal() { document.getElementById('modal').classList.remove('active'); }
+
+    async function savePerson() {
+      const pid = document.getElementById('f_pid').value.trim();
+      const body = {
+        name: document.getElementById('f_name').value.trim(),
+        email: document.getElementById('f_email').value.trim(),
+        phone: document.getElementById('f_phone').value.trim()
+      };
+
+      if (!pid || !body.name) { toast('ID and Name are required', 'error'); return; }
+
+      const method = editingId ? 'PUT' : 'POST';
+      const res = await api(`/person/${pid}`, {
+        method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+      });
+
+      if (res.ok) {
+        toast(editingId ? 'Person updated' : 'Person added', 'success');
+        closeModal();
+        load();
+      } else {
+        toast(res.data.error || 'Error', 'error');
+      }
+    }
+
+    async function del(pid) {
+      if (!confirm(`Delete ${pid}?`)) return;
+      const res = await api(`/person/${pid}`, {method: 'DELETE'});
+      if (res.ok) { toast('Deleted', 'success'); selected.delete(pid); load(); }
+      else toast(res.data.error || 'Error', 'error');
+    }
+
+    // ── Bulk selection ────────────────────────────────
+    function toggleSelect(cb) {
+      cb.checked ? selected.add(cb.value) : selected.delete(cb.value);
+      document.getElementById('bulkDeleteBtn').style.display = selected.size ? '' : 'none';
+    }
+
+    function toggleAll(cb) {
+      const boxes = document.querySelectorAll('tbody input[type=checkbox]');
+      boxes.forEach(b => { b.checked = cb.checked; cb.checked ? selected.add(b.value) : selected.delete(b.value); });
+      document.getElementById('bulkDeleteBtn').style.display = selected.size ? '' : 'none';
+    }
+
+    async function bulkDelete() {
+      if (!selected.size) return;
+      if (!confirm(`Delete ${selected.size} persons?`)) return;
+      const res = await api('/person/bulk', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids: [...selected]})
+      });
+      if (res.ok) { toast(`${res.data.deleted_count} deleted`, 'success'); selected.clear(); load(); }
+      else toast(res.data.error || 'Error', 'error');
+    }
+
+    // ── Toast ─────────────────────────────────────────
+    function toast(msg, type) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = `toast ${type} show`;
+      setTimeout(() => el.classList.remove('show'), 2500);
+    }
+
+    // ── Init ──────────────────────────────────────────
+    load();
+
+    // Close modal on overlay click
+    document.getElementById('modal').addEventListener('click', function(e) {
+      if (e.target === this) closeModal();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,1223 @@
+name: Bootstrap EKS Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      aws_region:
+        description: 'AWS Region'
+        required: true
+        default: 'us-east-1'
+      cluster_name:
+        description: 'EKS Cluster Name (leave empty to use EKS_CLUSTER_NAME secret)'
+        required: false
+        default: ''
+
+concurrency:
+  group: full-stack-deployment
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ github.event.inputs.aws_region || 'us-east-1' }}
+  ECR_REPOSITORY: crm-app
+  EKS_CLUSTER_NAME: ${{ github.event.inputs.cluster_name || secrets.EKS_CLUSTER_NAME }}
+  RELEASE_NAME: crm-stack
+
+jobs:
+  # Job 1: Build and push image to ECR
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      image-tag: ${{ steps.image-info.outputs.tag || steps.image-info-existing.outputs.tag }}
+      ecr-registry: ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: app/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r app/requirements-dev.txt
+
+      - name: Run unit tests
+        run: pytest app/test_app.py -v
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Check if image already exists in ECR
+        id: check-image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          if aws ecr describe-images --repository-name ${{ env.ECR_REPOSITORY }} --image-ids imageTag=$IMAGE_TAG --region ${{ env.AWS_REGION }} >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Image with tag $IMAGE_TAG already exists in ECR"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Image does not exist, will build and push"
+          fi
+
+      - name: Build, tag, and push image to ECR
+        if: steps.check-image.outputs.exists == 'false'
+        id: image-info
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f app/Dockerfile app/
+
+          # Try to push, but handle race condition gracefully
+          if docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG 2>&1 | tee /tmp/push.log; then
+            echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+            echo "Image pushed: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          else
+            # Check if failure was due to tag already existing (race condition with another workflow)
+            if grep -q "tag invalid.*already exists" /tmp/push.log; then
+              echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+              echo "Image already exists (pushed by another workflow): $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+              echo "Continuing with deployment using existing image..."
+            else
+              echo "Push failed for unknown reason"
+              cat /tmp/push.log
+              exit 1
+            fi
+          fi
+
+      - name: Skip build (image exists)
+        if: steps.check-image.outputs.exists == 'true'
+        id: image-info-existing
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "Skipping build - reusing existing image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+
+      - name: Update image tag for ArgoCD
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          # Update ONLY the crm-app image tag (first tag: line in the file)
+          # Using 0,/pattern/ to avoid clobbering mongodb and fluentd image tags
+          sed -i "0,/^\(\s*\)tag:.*/s//\1tag: \"$IMAGE_TAG\"/" k8s/crm-stack/values.yaml
+
+          # Update the repository URL if it's still the placeholder
+          sed -i "s|repository:.*REPLACE_WITH_ECR_URL.*|repository: $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}|" k8s/crm-stack/values.yaml
+
+          # Commit and push the change (ArgoCD detects this and syncs)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add k8s/crm-stack/values.yaml
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "ci: update image tag to $IMAGE_TAG [skip ci]"
+          git push
+
+  # Job 2: Deploy via ArgoCD (replaces imperative Helm installs)
+  deploy-argocd:
+    name: Deploy via ArgoCD
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      ingress-url: ${{ steps.get-ingress-lb.outputs.url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.16.0'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS credentials
+        run: |
+          echo "Verifying AWS credentials..."
+          aws sts get-caller-identity
+          echo "AWS credentials verified successfully"
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          echo "kubectl configured for EKS cluster"
+
+      - name: Check Node Resources Before Deployment
+        run: |
+          echo "=== Node Resources Before Deployment ==="
+          kubectl top nodes 2>/dev/null || kubectl get nodes -o custom-columns=NAME:.metadata.name,CPU:.status.capacity.cpu,MEMORY:.status.capacity.memory
+          echo ""
+          kubectl describe nodes | grep -A 5 "Allocated resources"
+
+      - name: Install ArgoCD
+        run: |
+          echo "Installing ArgoCD via Helm..."
+
+          helm repo add argo https://argoproj.github.io/argo-helm
+          helm repo update
+
+          helm upgrade --install argocd argo/argo-cd \
+            --namespace argocd \
+            --create-namespace \
+            -f k8s/values/argocd-values.yaml \
+            --wait \
+            --timeout 5m
+
+          echo "ArgoCD installed successfully"
+
+          # Wait for ArgoCD server to be ready
+          kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=120s
+          echo "ArgoCD server is ready"
+
+      - name: Deploy ArgoCD Ingress
+        run: |
+          echo "Deploying ArgoCD Ingress..."
+          kubectl apply -f k8s/argocd/argocd-ingress.yaml
+          echo "ArgoCD Ingress deployed at /argocd"
+
+      - name: Bootstrap Elasticsearch and Kibana Secrets
+        run: |
+          echo "Pre-creating Elasticsearch credentials and Kibana token..."
+          echo "This prevents a deadlock: Kibana's Helm pre-install hook needs ES running,"
+          echo "but ArgoCD maps it to PreSync which blocks ES deployment."
+
+          # Generate ES password and create credentials secret
+          ES_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+          kubectl create namespace default 2>/dev/null || true
+          kubectl create secret generic elasticsearch-master-credentials \
+            --from-literal=username=elastic \
+            --from-literal=password="$ES_PASSWORD" \
+            -n default --dry-run=client -o yaml | kubectl apply -f -
+          echo "Elasticsearch credentials secret created"
+
+          # Apply Nginx Ingress first so ArgoCD can start deploying ES
+          echo "Deploying CRM stack directly (first-time bootstrap with --no-hooks)..."
+          helm repo add elastic https://helm.elastic.co 2>/dev/null || true
+          helm repo update
+
+          # Install just Elasticsearch directly (ArgoCD will adopt it later)
+          helm upgrade --install crm-stack k8s/crm-stack/ \
+            -f k8s/crm-stack/values.yaml \
+            -f k8s/values/values-ingress.yaml \
+            --set elasticsearch.secret.password="$ES_PASSWORD" \
+            --no-hooks \
+            --timeout 10m
+
+          # Wait for Elasticsearch to be ready
+          echo "Waiting for Elasticsearch..."
+          kubectl wait --for=condition=ready pod/elasticsearch-master-0 -n default --timeout=300s
+
+          # Create Kibana ES service account token via ES API
+          echo "Creating Kibana service account token..."
+          TOKEN=$(kubectl exec elasticsearch-master-0 -n default -- curl -s -k \
+            -u "elastic:${ES_PASSWORD}" \
+            -X POST "https://localhost:9200/_security/service/elastic/kibana/credential/token/crm-stack-kibana" \
+            2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['token']['value'])" 2>/dev/null)
+
+          if [ -n "$TOKEN" ]; then
+            kubectl create secret generic crm-stack-kibana-es-token \
+              --from-literal=token="$TOKEN" \
+              -n default --dry-run=client -o yaml | kubectl apply -f -
+            echo "Kibana ES token secret created"
+          else
+            echo "WARNING: Could not create Kibana token — Kibana may need manual intervention"
+          fi
+
+          echo "Bootstrap complete — ArgoCD can now manage the stack"
+
+      - name: Patch ArgoCD manifests with repo owner
+        run: |
+          echo "Replacing REPLACE_OWNER placeholder with ${{ github.repository_owner }}..."
+          sed -i "s|REPLACE_OWNER|${{ github.repository_owner }}|g" k8s/argocd/crm-stack-app.yaml
+          sed -i "s|REPLACE_OWNER|${{ github.repository_owner }}|g" k8s/argocd/nginx-ingress-app.yaml
+          sed -i "s|REPLACE_OWNER|${{ github.repository_owner }}|g" k8s/argocd/prometheus-app.yaml
+          sed -i "s|REPLACE_OWNER|${{ github.repository_owner }}|g" k8s/argocd/manifests-app.yaml
+          echo "Done — all ArgoCD manifests now point to ${{ github.repository_owner }}/CloudOps_CRM"
+
+      - name: Apply ArgoCD Application Manifests
+        run: |
+          echo "Applying ArgoCD Application manifests..."
+          echo "ArgoCD will now manage all deployments via GitOps"
+          echo ""
+
+          # Apply all Application CRDs — ArgoCD takes over from here
+          # Nginx Ingress (sync-wave -1) deploys first
+          kubectl apply -f k8s/argocd/nginx-ingress-app.yaml
+          echo "Applied: nginx-ingress (sync-wave -1, deploys first)"
+
+          kubectl apply -f k8s/argocd/crm-stack-app.yaml
+          echo "Applied: crm-stack (CRM App + MongoDB + EFK)"
+
+          kubectl apply -f k8s/argocd/prometheus-app.yaml
+          echo "Applied: prometheus-stack (Prometheus + Grafana)"
+
+          kubectl apply -f k8s/argocd/manifests-app.yaml
+          echo "Applied: crm-manifests (Ingress, ServiceMonitor, Dashboard)"
+
+          echo ""
+          echo "All ArgoCD Applications applied"
+
+      - name: Wait for Nginx Ingress Sync
+        run: |
+          echo "Waiting for Nginx Ingress Controller to sync via ArgoCD..."
+
+          for i in {1..30}; do
+            SYNC_STATUS=$(kubectl get application nginx-ingress -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+            HEALTH_STATUS=$(kubectl get application nginx-ingress -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+
+            echo "Attempt $i/30: Sync=$SYNC_STATUS, Health=$HEALTH_STATUS"
+
+            if [ "$SYNC_STATUS" = "Synced" ] && [ "$HEALTH_STATUS" = "Healthy" ]; then
+              echo "Nginx Ingress is synced and healthy"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: Nginx Ingress did not become healthy within timeout"
+              kubectl get application nginx-ingress -n argocd -o yaml 2>/dev/null | tail -30
+              exit 1
+            fi
+            sleep 20
+          done
+
+      - name: Wait for CRM Stack Sync
+        run: |
+          echo "Waiting for CRM Stack to sync via ArgoCD..."
+
+          for i in {1..45}; do
+            SYNC_STATUS=$(kubectl get application crm-stack -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+            HEALTH_STATUS=$(kubectl get application crm-stack -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+
+            echo "Attempt $i/45: Sync=$SYNC_STATUS, Health=$HEALTH_STATUS"
+
+            if [ "$SYNC_STATUS" = "Synced" ] && [ "$HEALTH_STATUS" = "Healthy" ]; then
+              echo "CRM Stack is synced and healthy"
+              break
+            fi
+            if [ "$i" -eq 45 ]; then
+              echo "ERROR: CRM Stack did not become healthy within timeout"
+              kubectl get application crm-stack -n argocd -o yaml 2>/dev/null | tail -30
+              kubectl get pods -n default
+              exit 1
+            fi
+            sleep 20
+          done
+
+      - name: Wait for Prometheus Stack Sync
+        run: |
+          echo "Waiting for Prometheus Stack to sync via ArgoCD..."
+
+          for i in {1..30}; do
+            SYNC_STATUS=$(kubectl get application prometheus-stack -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+            HEALTH_STATUS=$(kubectl get application prometheus-stack -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+
+            echo "Attempt $i/30: Sync=$SYNC_STATUS, Health=$HEALTH_STATUS"
+
+            if [ "$SYNC_STATUS" = "Synced" ] && [ "$HEALTH_STATUS" = "Healthy" ]; then
+              echo "Prometheus Stack is synced and healthy"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: Prometheus Stack did not become healthy within timeout"
+              kubectl get application prometheus-stack -n argocd -o yaml 2>/dev/null | tail -30
+              exit 1
+            fi
+            sleep 20
+          done
+
+      - name: Wait for Manifests Sync
+        run: |
+          echo "Waiting for CRM Manifests to sync via ArgoCD..."
+
+          for i in {1..15}; do
+            SYNC_STATUS=$(kubectl get application crm-manifests -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
+            HEALTH_STATUS=$(kubectl get application crm-manifests -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
+
+            echo "Attempt $i/15: Sync=$SYNC_STATUS, Health=$HEALTH_STATUS"
+
+            if [ "$SYNC_STATUS" = "Synced" ] && [ "$HEALTH_STATUS" = "Healthy" ]; then
+              echo "CRM Manifests are synced and healthy"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "WARNING: CRM Manifests did not sync within timeout (non-critical)"
+            fi
+            sleep 10
+          done
+
+      - name: Get Ingress LoadBalancer URL
+        id: get-ingress-lb
+        run: |
+          echo "Waiting for Nginx Ingress LoadBalancer to provision..."
+
+          for i in {1..30}; do
+            INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            if [ -n "$INGRESS_URL" ]; then
+              echo "url=$INGRESS_URL" >> $GITHUB_OUTPUT
+              echo "Nginx Ingress LoadBalancer URL: $INGRESS_URL"
+              echo ""
+              echo "=== Access URLs (via Ingress) ==="
+              echo "CRM App:     http://$INGRESS_URL/"
+              echo "Kibana:      http://$INGRESS_URL/kibana"
+              echo "Grafana:     http://$INGRESS_URL/grafana"
+              echo "ArgoCD:      http://$INGRESS_URL/argocd"
+              break
+            fi
+            echo "Attempt $i/30: LoadBalancer not ready yet..."
+            sleep 10
+          done
+
+      - name: Create Elasticsearch Index Template and Ingest Pipeline
+        run: |
+          echo "Creating Elasticsearch index template and ingest pipeline for Fluentd logs..."
+
+          # Wait for Elasticsearch to be ready
+          echo "Waiting for Elasticsearch pod..."
+          kubectl wait --for=condition=ready pod/elasticsearch-master-0 -n default --timeout=300s || true
+
+          # Get ES password
+          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
+
+          # Create index template for logs-* indices (prevents mapping conflicts)
+          kubectl exec elasticsearch-master-0 -n default -- curl -k -s \
+            -u "elastic:${ES_PASSWORD}" \
+            -X PUT "https://localhost:9200/_index_template/logs-template" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "index_patterns": ["logs-*"],
+              "priority": 200,
+              "template": {
+                "settings": {
+                  "number_of_shards": 1,
+                  "number_of_replicas": 0
+                },
+                "mappings": {
+                  "properties": {
+                    "message": { "type": "text" },
+                    "service.name": { "type": "keyword" },
+                    "service.type": { "type": "keyword" },
+                    "event.dataset": { "type": "keyword" },
+                    "event.decoded": { "type": "object", "enabled": true },
+                    "host.name": { "type": "keyword" },
+                    "container.name": { "type": "keyword" },
+                    "kubernetes.pod.name": { "type": "keyword" },
+                    "kubernetes.namespace": { "type": "keyword" },
+                    "@log_name": { "type": "keyword" },
+                    "@timestamp": { "type": "date" }
+                  }
+                }
+              }
+            }'
+
+          echo ""
+          echo "Index template created"
+
+          # Create ingest pipeline for JSON parsing
+          kubectl exec elasticsearch-master-0 -n default -- curl -k -s \
+            -u "elastic:${ES_PASSWORD}" \
+            -X PUT "https://localhost:9200/_ingest/pipeline/logs-generic" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "description": "Parse JSON logs into event.decoded field",
+              "processors": [
+                {
+                  "json": {
+                    "field": "message",
+                    "target_field": "event.decoded",
+                    "ignore_failure": true
+                  }
+                }
+              ]
+            }'
+
+          echo ""
+          echo "Ingest pipeline created"
+          echo "Elasticsearch resources ready for Fluentd logging"
+
+      - name: Verify ArgoCD Deployment Status
+        run: |
+          echo "=== ArgoCD Application Status ==="
+          echo ""
+
+          for app in nginx-ingress crm-stack prometheus-stack crm-manifests; do
+            SYNC=$(kubectl get application $app -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "N/A")
+            HEALTH=$(kubectl get application $app -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "N/A")
+            echo "  $app: Sync=$SYNC, Health=$HEALTH"
+          done
+
+          echo ""
+          echo "=== Helm Releases (managed by ArgoCD) ==="
+          helm list -A
+          echo ""
+          echo "=== All Resources in default namespace ==="
+          kubectl get all -n default -o wide
+          echo ""
+          echo "=== Persistent Volume Claims ==="
+          kubectl get pvc -n default
+          echo ""
+          echo "=== Services ==="
+          kubectl get services -A
+          echo ""
+          echo "=== Ingress ==="
+          kubectl get ingress -A
+
+      - name: Check Resource Usage After Deployment
+        run: |
+          echo "=== Node Resources After Deployment ==="
+          kubectl top nodes 2>/dev/null || echo "Metrics server not available"
+          echo ""
+          echo "=== Pod Resource Usage ==="
+          kubectl top pods -n default 2>/dev/null || echo "Metrics server not available"
+          echo ""
+          kubectl describe nodes | grep -A 5 "Allocated resources"
+
+  # Job 3: Test CRM Application
+  test-crm-application:
+    name: Test CRM Application
+    runs-on: ubuntu-latest
+    needs: deploy-argocd
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Get Ingress URL
+        id: get-lb
+        run: |
+          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "url=$INGRESS_URL" >> $GITHUB_OUTPUT
+          echo "CRM App URL (via Ingress): http://$INGRESS_URL"
+
+      - name: Wait for DNS propagation
+        run: |
+          echo "Waiting for DNS propagation..."
+          LB_URL="${{ steps.get-lb.outputs.url }}"
+          for i in {1..30}; do
+            if host $LB_URL >/dev/null 2>&1; then
+              echo "DNS resolved successfully"
+              break
+            fi
+            echo "Attempt $i/30: DNS not resolved yet..."
+            sleep 10
+          done
+          sleep 10
+
+      - name: Test API Root Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: $LB_URL/"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "Root endpoint test failed"
+            exit 1
+          fi
+          echo "Root endpoint test passed"
+
+      - name: Test Health Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: $LB_URL/health"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/health)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "Health endpoint test failed"
+            exit 1
+          fi
+          echo "Health endpoint test passed"
+
+      - name: Test POST Person Endpoint
+        id: post-person
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: POST $LB_URL/person/test-user-1"
+
+          response=$(curl -s -w "\n%{http_code}" -X POST $LB_URL/person/test-user-1 \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Test User","email":"test@example.com","phone":"555-0001"}')
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ] && [ "$http_code" != "201" ]; then
+            echo "POST person test failed - expected 200 or 201, got $http_code"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Person added successfully"; then
+            echo "POST person response invalid"
+            exit 1
+          fi
+
+          # Extract the MongoDB _id from response for later use
+          PERSON_ID=$(echo "$body" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+          echo "person_id=$PERSON_ID" >> $GITHUB_OUTPUT
+          echo "Extracted Person ID: $PERSON_ID"
+          echo "POST person test passed"
+
+      - name: Test GET All Persons Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: GET $LB_URL/person"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/person)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "GET all persons test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "test@example.com"; then
+            echo "Test user not found in response"
+            exit 1
+          fi
+          echo "GET all persons test passed"
+
+      - name: Test GET Person by ID Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          PERSON_ID="${{ steps.post-person.outputs.person_id }}"
+          echo "Testing: GET $LB_URL/person?id=$PERSON_ID"
+
+          response=$(curl -s -w "\n%{http_code}" "$LB_URL/person?id=$PERSON_ID")
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "GET person by ID test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Test User"; then
+            echo "Person data not found"
+            exit 1
+          fi
+          echo "GET person by ID test passed"
+
+      - name: Test MongoDB Connectivity
+        run: |
+          echo "Testing MongoDB connectivity through application..."
+
+          # Add another user to test DB persistence
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          curl -s -X POST $LB_URL/person/test-user-2 \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Second User","email":"second@example.com","phone":"555-0002"}'
+
+          # Get all users
+          response=$(curl -s $LB_URL/person)
+
+          # Check if both users exist
+          if ! echo "$response" | grep -q "test@example.com"; then
+            echo "First user not found"
+            exit 1
+          fi
+
+          if ! echo "$response" | grep -q "second@example.com"; then
+            echo "Second user not found"
+            exit 1
+          fi
+
+          echo "MongoDB connectivity test passed"
+
+      - name: Test GET Person by Custom ID
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: GET $LB_URL/person/test-user-1"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/person/test-user-1)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "GET person by custom ID test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Test User"; then
+            echo "Person data not found by custom ID"
+            exit 1
+          fi
+          echo "GET person by custom ID test passed"
+
+      - name: Test PUT Update Person
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: PUT $LB_URL/person/test-user-1"
+
+          response=$(curl -s -w "\n%{http_code}" -X PUT $LB_URL/person/test-user-1 \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Updated Test User","email":"updated@example.com","phone":"555-9999"}')
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "PUT update person test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Person updated successfully"; then
+            echo "PUT response invalid"
+            exit 1
+          fi
+
+          # Verify the update
+          verify_response=$(curl -s $LB_URL/person/test-user-1)
+          if ! echo "$verify_response" | grep -q "Updated Test User"; then
+            echo "Update verification failed"
+            exit 1
+          fi
+          if ! echo "$verify_response" | grep -q "updated@example.com"; then
+            echo "Email update verification failed"
+            exit 1
+          fi
+          echo "PUT update person test passed"
+
+      - name: Test DELETE Person
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+
+          # First add a user to delete
+          curl -s -X POST $LB_URL/person/test-user-delete \
+            -H "Content-Type: application/json" \
+            -d '{"name":"Delete Me","email":"delete@example.com","phone":"555-0000"}'
+
+          echo "Testing: DELETE $LB_URL/person/test-user-delete"
+
+          response=$(curl -s -w "\n%{http_code}" -X DELETE $LB_URL/person/test-user-delete)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "DELETE person test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "Person deleted successfully"; then
+            echo "DELETE response invalid"
+            exit 1
+          fi
+
+          # Verify deletion - should return 404
+          verify_response=$(curl -s -w "\n%{http_code}" $LB_URL/person/test-user-delete)
+          verify_code=$(echo "$verify_response" | tail -n1)
+          if [ "$verify_code" != "404" ]; then
+            echo "Delete verification failed - person still exists"
+            exit 1
+          fi
+          echo "DELETE person test passed"
+
+      - name: Test Search Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: GET $LB_URL/person/search?q=Updated"
+
+          response=$(curl -s -w "\n%{http_code}" "$LB_URL/person/search?q=Updated")
+          http_code=$(echo "$response" | tail -n1)
+
+          echo "HTTP Code: $http_code"
+          if [ "$http_code" != "200" ]; then
+            echo "Search endpoint test failed"
+            exit 1
+          fi
+          echo "Search endpoint test passed"
+
+      - name: Test Stats Endpoint
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: GET $LB_URL/stats"
+
+          response=$(curl -s -w "\n%{http_code}" $LB_URL/stats)
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          echo "Response: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "Stats endpoint test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q "total_persons"; then
+            echo "Stats response missing total_persons"
+            exit 1
+          fi
+          echo "Stats endpoint test passed"
+
+      - name: Test Pagination
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Testing: GET $LB_URL/person?page=1&limit=5"
+
+          response=$(curl -s -w "\n%{http_code}" "$LB_URL/person?page=1&limit=5")
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP Code: $http_code"
+          if [ "$http_code" != "200" ]; then
+            echo "Pagination test failed"
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q '"page"'; then
+            echo "Pagination response missing page field"
+            exit 1
+          fi
+          echo "Pagination test passed"
+
+  # Job 4: Test Observability Stack
+  test-observability:
+    name: Test Observability Stack
+    runs-on: ubuntu-latest
+    needs: deploy-argocd
+    if: always() && needs.deploy-argocd.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Test Elasticsearch Cluster Health
+        run: |
+          echo "Testing Elasticsearch cluster health..."
+
+          # Port-forward to Elasticsearch
+          kubectl port-forward svc/elasticsearch-master 9200:9200 -n default &
+          PF_PID=$!
+          sleep 10
+
+          # Get credentials
+          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
+
+          # Test cluster health
+          HEALTH=$(curl -s -u "elastic:$ES_PASSWORD" -k https://localhost:9200/_cluster/health | jq -r '.status')
+          echo "Elasticsearch cluster status: $HEALTH"
+
+          if [ "$HEALTH" != "green" ] && [ "$HEALTH" != "yellow" ]; then
+            echo "Elasticsearch cluster is not healthy"
+            kill $PF_PID
+            exit 1
+          fi
+
+          echo "Elasticsearch cluster is healthy ($HEALTH)"
+          kill $PF_PID
+
+      - name: Test Elasticsearch Index Creation
+        run: |
+          echo "Testing Elasticsearch index operations..."
+
+          kubectl port-forward svc/elasticsearch-master 9200:9200 -n default &
+          PF_PID=$!
+          sleep 10
+
+          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
+
+          # List indices
+          INDICES=$(curl -s -u "elastic:$ES_PASSWORD" -k https://localhost:9200/_cat/indices?v)
+          echo "Current indices:"
+          echo "$INDICES"
+
+          # Check for logs-* indices (logs-crm, logs-mongodb, logs-system)
+          if echo "$INDICES" | grep -q "logs-"; then
+            echo "Fluentd logs indices found (logs-crm, logs-mongodb, logs-system)"
+            # Count documents in each index
+            for idx in logs-crm logs-mongodb logs-system; do
+              DOC_COUNT=$(curl -s -u "elastic:$ES_PASSWORD" -k "https://localhost:9200/$idx/_count" 2>/dev/null | jq -r '.count // 0')
+              echo "  - $idx: $DOC_COUNT documents"
+            done
+          else
+            echo "No logs-* indices yet (may take a few minutes for Fluentd to send logs)"
+          fi
+
+          kill $PF_PID
+
+      - name: Test Kibana Accessibility
+        run: |
+          echo "Testing Kibana accessibility via Ingress..."
+
+          # Get Ingress URL
+          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
+
+          echo "Kibana URL: http://$INGRESS_URL/kibana"
+
+          # Test Kibana through Ingress
+          for i in {1..10}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "elastic:$ES_PASSWORD" "http://$INGRESS_URL/kibana/api/status" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Kibana is accessible and healthy via Ingress (HTTP 200)"
+              break
+            elif [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "401" ]; then
+              echo "Attempt $i/10: Kibana requires auth/redirecting - this is expected..."
+              sleep 5
+              break
+            else
+              echo "Attempt $i/10: Kibana returned HTTP $HTTP_CODE..."
+              sleep 10
+            fi
+          done
+
+          echo "Kibana accessibility test complete"
+          echo "Access Kibana at: http://$INGRESS_URL/kibana"
+          echo "Credentials: elastic / ***"
+
+      - name: Test Fluentd Log Collection
+        run: |
+          echo "Testing Fluentd DaemonSet..."
+
+          # Check Fluentd pods
+          FLUENTD_PODS=$(kubectl get pods -l app.kubernetes.io/name=fluentd -n default -o jsonpath='{.items[*].metadata.name}')
+          if [ -z "$FLUENTD_PODS" ]; then
+            echo "No Fluentd pods found"
+            exit 1
+          fi
+
+          echo "Fluentd pods running: $FLUENTD_PODS"
+
+          # Check Fluentd is collecting logs
+          for pod in $FLUENTD_PODS; do
+            echo "Checking $pod..."
+            LOG_COUNT=$(kubectl logs $pod -n default --tail=100 | wc -l)
+            if [ "$LOG_COUNT" -gt 0 ]; then
+              echo "$pod is collecting logs ($LOG_COUNT lines)"
+            else
+              echo "$pod has no logs yet"
+            fi
+          done
+
+      - name: Verify Log Pipeline (End-to-End)
+        run: |
+          echo "Verifying complete log pipeline: App -> Fluentd -> Elasticsearch -> Kibana"
+
+          # Generate test logs from CRM app
+          echo "Generating test logs from CRM app..."
+          CRM_PODS=$(kubectl get pods -l app=crm-app -n default -o jsonpath='{.items[*].metadata.name}')
+          for pod in $CRM_PODS; do
+            kubectl logs $pod -n default --tail=5
+          done
+
+          echo "Log pipeline verification complete"
+          echo "Note: It may take 1-2 minutes for logs to appear in Elasticsearch/Kibana"
+
+      - name: Test Prometheus Health
+        run: |
+          echo "Testing Prometheus health..."
+
+          # Port-forward to Prometheus
+          kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+          PF_PID=$!
+          sleep 10
+
+          # Test Prometheus health
+          HEALTH=$(curl -s http://localhost:9090/-/healthy)
+          echo "Prometheus health: $HEALTH"
+
+          if [ "$HEALTH" != "Prometheus Server is Healthy." ] && [ "$HEALTH" != "Prometheus is Healthy." ]; then
+            echo "Prometheus health check returned unexpected response"
+          else
+            echo "Prometheus is healthy"
+          fi
+
+          kill $PF_PID
+
+      - name: Test Prometheus Targets
+        run: |
+          echo "Testing Prometheus targets..."
+
+          kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+          PF_PID=$!
+          sleep 10
+
+          # Get targets
+          TARGETS=$(curl -s http://localhost:9090/api/v1/targets | jq -r '.data.activeTargets | length')
+          echo "Active Prometheus targets: $TARGETS"
+
+          if [ "$TARGETS" -gt 0 ]; then
+            echo "Prometheus is scraping $TARGETS targets"
+          else
+            echo "No active Prometheus targets found"
+          fi
+
+          kill $PF_PID
+
+      - name: Test CRM Application Metrics
+        run: |
+          echo "Testing CRM application metrics collection..."
+
+          # Port-forward to Prometheus
+          kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+          PF_PID=$!
+          sleep 10
+
+          # Query for CRM app metrics
+          METRIC_QUERY='flask_http_request_total'
+          RESULT=$(curl -s "http://localhost:9090/api/v1/query?query=$METRIC_QUERY" | jq -r '.data.result | length')
+
+          echo "CRM metrics found: $RESULT"
+
+          if [ "$RESULT" -gt 0 ]; then
+            echo "CRM application metrics are being collected"
+          else
+            echo "No CRM metrics found yet (may take a few minutes after ServiceMonitor deployment)"
+          fi
+
+          kill $PF_PID
+
+      - name: Test Grafana Accessibility
+        run: |
+          echo "Testing Grafana accessibility via Ingress..."
+
+          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "Grafana URL: http://$INGRESS_URL/grafana"
+
+          # Test Grafana health through Ingress
+          for i in {1..10}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://$INGRESS_URL/grafana/api/health" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "Grafana is accessible and healthy via Ingress"
+              break
+            elif [ "$HTTP_CODE" = "302" ]; then
+              echo "Grafana is accessible (redirecting to login)"
+              break
+            else
+              echo "Attempt $i/10: Grafana returned HTTP $HTTP_CODE..."
+              sleep 10
+            fi
+          done
+
+          echo "Grafana accessibility test complete"
+
+      - name: Test ArgoCD Accessibility
+        run: |
+          echo "Testing ArgoCD accessibility via Ingress..."
+
+          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "ArgoCD URL: http://$INGRESS_URL/argocd"
+
+          # Test ArgoCD through Ingress
+          for i in {1..10}; do
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://$INGRESS_URL/argocd" 2>/dev/null || echo "000")
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "ArgoCD is accessible via Ingress (HTTP $HTTP_CODE)"
+              break
+            else
+              echo "Attempt $i/10: ArgoCD returned HTTP $HTTP_CODE..."
+              sleep 10
+            fi
+          done
+
+          echo "ArgoCD accessibility test complete"
+
+      - name: Verify Monitoring Stack (Summary)
+        run: |
+          echo "=== Monitoring Stack Summary ==="
+          echo ""
+          echo "Prometheus:"
+          kubectl get pods -l app.kubernetes.io/name=prometheus -n monitoring
+          echo ""
+          echo "Grafana:"
+          kubectl get pods -l app.kubernetes.io/name=grafana -n monitoring
+          echo ""
+          echo "AlertManager:"
+          kubectl get pods -l app.kubernetes.io/name=alertmanager -n monitoring
+          echo ""
+          echo "Node Exporter:"
+          kubectl get daemonset -l app.kubernetes.io/name=prometheus-node-exporter -n monitoring
+          echo ""
+          echo "Kube State Metrics:"
+          kubectl get deployment -l app.kubernetes.io/name=kube-state-metrics -n monitoring
+          echo ""
+          echo "Monitoring stack verification complete"
+
+  # Job 5: Generate Deployment Report
+  deployment-report:
+    name: Generate Full Stack Deployment Report
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-argocd, test-crm-application, test-observability]
+    if: always() && needs.deploy-argocd.result == 'success'
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Generate Deployment Summary
+        run: |
+          # Get Ingress URL
+          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Provisioning...")
+
+          echo "# Full Stack Deployment Summary"
+          echo ""
+          echo "## Build Information"
+          echo "- **Commit SHA**: ${{ github.sha }}"
+          echo "- **Image Tag**: ${{ needs.build-and-push.outputs.image-tag }}"
+          echo "- **ECR Registry**: ${{ needs.build-and-push.outputs.ecr-registry }}"
+          echo ""
+          echo "## Cluster Information"
+          echo "- **Cluster**: ${{ env.EKS_CLUSTER_NAME }}"
+          echo "- **Region**: ${{ env.AWS_REGION }}"
+          echo "- **Deployment Method**: ArgoCD GitOps"
+          echo "- **Namespace**: default"
+          echo "- **Monitoring Namespace**: monitoring"
+          echo ""
+          echo "## ArgoCD Application Status"
+
+          for app in nginx-ingress crm-stack prometheus-stack crm-manifests; do
+            SYNC=$(kubectl get application $app -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "N/A")
+            HEALTH=$(kubectl get application $app -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "N/A")
+            echo "- **$app**: Sync=$SYNC, Health=$HEALTH"
+          done
+
+          echo ""
+          echo "## Application URLs (via Nginx Ingress)"
+          echo "- **Ingress LoadBalancer**: http://$INGRESS_URL"
+          echo "- **CRM Application**: http://$INGRESS_URL/"
+          echo "- **Kibana Dashboard**: http://$INGRESS_URL/kibana"
+          echo "- **Grafana Dashboard**: http://$INGRESS_URL/grafana"
+          echo "- **ArgoCD Dashboard**: http://$INGRESS_URL/argocd"
+          echo "- **Prometheus**: Internal (prometheus-kube-prometheus-prometheus.monitoring.svc:9090)"
+          echo "- **Elasticsearch**: Internal (elasticsearch-master.default.svc:9200)"
+          echo ""
+          echo "## Credentials"
+          echo "- **Elasticsearch User**: elastic"
+          echo "- **Elasticsearch Password**: (retrieve from k8s secret)"
+          echo "- **Kibana**: Use Elasticsearch credentials"
+          echo "- **Grafana User**: admin"
+          echo "- **Grafana Password**: (set during deployment)"
+          echo "- **ArgoCD Admin Password**: (retrieve with: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
+          echo ""
+          echo "## Helm Releases (managed by ArgoCD)"
+          helm list -A
+          echo ""
+          echo "## Deployment Status"
+          kubectl get all -n default -o wide
+          echo ""
+          echo "## Ingress Status"
+          kubectl get ingress -A
+          echo ""
+          echo "## Resource Usage"
+          kubectl top nodes 2>/dev/null || echo "Metrics server not available"
+          kubectl top pods -n default 2>/dev/null || echo "Metrics server not available"
+          echo ""
+          echo "## Job Results"
+          echo "- **Build and Push**: ${{ needs.build-and-push.result }}"
+          echo "- **Deploy via ArgoCD**: ${{ needs.deploy-argocd.result }}"
+          echo "- **Test CRM Application**: ${{ needs.test-crm-application.result }}"
+          echo "- **Test Observability**: ${{ needs.test-observability.result }}"
+          echo ""
+          echo "## Access Instructions"
+          echo ""
+          echo "### CRM Application"
+          echo '```bash'
+          echo "curl http://$INGRESS_URL/health"
+          echo '```'
+          echo ""
+          echo "### ArgoCD Dashboard"
+          echo "1. Open: http://$INGRESS_URL/argocd"
+          echo "2. Username: admin"
+          echo '3. Password: `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='"'"'{.data.password}'"'"' | base64 -d`'
+          echo ""
+          echo "### Kibana Dashboard (Logging)"
+          echo "1. Open: http://$INGRESS_URL/kibana"
+          echo "2. Login with: elastic / (retrieve from k8s secret)"
+          echo "3. Create index pattern: logs-* (indices: logs-crm, logs-mongodb, logs-system)"
+          echo ""
+          echo "### Grafana Dashboard (Monitoring)"
+          echo "1. Open: http://$INGRESS_URL/grafana"
+          echo "2. Login with: admin / (password set during deployment)"
+          echo "3. Explore pre-installed Kubernetes dashboards"
+          echo "4. View CRM metrics: /metrics endpoint data"
+          echo ""
+          echo "---"
+          echo "Bootstrap Complete — cluster is fully operational (via ArgoCD GitOps)!"

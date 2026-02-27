@@ -1,0 +1,100 @@
+# CloudOps CRM Infrastructure
+
+Terraform code for provisioning AWS infrastructure for the CRM application.
+
+## Components
+
+- **EKS Cluster** -- Kubernetes 1.31 with managed node groups (t3a.medium, ON_DEMAND)
+- **ECR Repository** -- Container registry with immutable tags and scan-on-push
+- **GitHub OIDC Role** -- Passwordless CI/CD authentication for GitHub Actions
+- **EBS CSI Driver** -- Dynamic volume provisioning with gp3 StorageClass
+- **Default VPC** -- Public subnets (no NAT Gateway costs)
+
+## Quick Start
+
+```bash
+# 1. Create S3 bucket for Terraform state (one-time)
+aws s3api create-bucket --bucket YOUR_BUCKET --region YOUR_REGION \
+  --create-bucket-configuration LocationConstraint=YOUR_REGION
+
+# 2. Configure variables
+cat > terraform.tfvars <<EOF
+github_repo_owner  = "<your-github-username>"
+developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
+EOF
+
+# 3. Deploy
+terraform init \
+  -backend-config="bucket=YOUR_BUCKET" \
+  -backend-config="region=YOUR_REGION"
+terraform plan
+terraform apply
+
+# 4. Connect to cluster
+aws eks update-kubeconfig --name $(terraform output -raw cluster_name) \
+  --region $(terraform output -raw aws_region)
+kubectl get nodes
+```
+
+## Configuration
+
+Create a `terraform.tfvars` file (gitignored):
+
+```hcl
+github_repo_owner  = "<your-github-username>"
+developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
+# cluster_name     = "cloudops-eks-cluster"  # optional override
+# aws_region       = "us-east-1"             # optional override
+```
+
+### Key Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Kubernetes Version | 1.31 | EKS cluster version |
+| Node Instance Type | t3a.medium | Cost-optimized |
+| Capacity Type | ON_DEMAND | Reliable availability |
+| Node Scaling | 1-2 nodes | Auto-scaling range |
+| StorageClass | gp3 (default) | Encrypted EBS volumes |
+
+## Files
+
+| File | Description |
+|------|-------------|
+| `eks.tf` | EKS cluster and node groups |
+| `ecr.tf` | ECR repository |
+| `ebs-csi-driver.tf` | EBS CSI addon + gp3 StorageClass |
+| `github-oidc.tf` | GitHub Actions IAM role + policies |
+| `provider.tf` | AWS and Kubernetes providers |
+| `backend.tf` | S3 remote state backend |
+| `variables.tf` | Input variables |
+| `outputs.tf` | Output values |
+
+## EKS Access
+
+Terraform creates EKS Access Entries for:
+1. **GitHub Actions OIDC role** -- CI/CD pipelines
+2. **Developer IAM user** -- kubectl access
+
+Both get `AmazonEKSClusterAdminPolicy`.
+
+## Cleanup
+
+**Run the cleanup-deployment workflow before destroying:**
+
+```bash
+# 1. Run cleanup-deployment.yml in GitHub Actions (removes K8s resources + ECR images)
+# 2. Wait 2-3 minutes for AWS resource propagation
+# 3. Destroy infrastructure
+terraform destroy
+```
+
+This prevents orphaned Load Balancers and ECR deletion failures.
+
+## Troubleshooting
+
+**Can't connect to cluster:** `aws eks update-kubeconfig --name <cluster-name> --region <region>` then verify with `aws sts get-caller-identity`
+
+**PVCs stuck Pending:** Check `kubectl get storageclass` -- gp3 should be default. If missing, run `terraform apply`.
+
+**Node group DEGRADED:** Check node group status in AWS console. Switch to ON_DEMAND if using SPOT.

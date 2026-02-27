@@ -1,0 +1,25 @@
+CloudOps CRM has been deployed!
+
+=== Access URLs ===
+
+Get the Ingress LoadBalancer URL:
+  kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+Application endpoints:
+  CRM App:  http://<INGRESS_URL>/
+  Kibana:   http://<INGRESS_URL>/kibana
+  Grafana:  http://<INGRESS_URL>/grafana
+  ArgoCD:   http://<INGRESS_URL>/argocd
+
+=== Verify Deployment ===
+
+  kubectl get pods -n {{ .Release.Namespace }}
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+=== Credentials ===
+
+Elasticsearch password:
+  kubectl get secret elasticsearch-master-credentials -n {{ .Release.Namespace }} -o jsonpath='{.data.password}' | base64 -d
+
+ArgoCD admin password:
+  kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d

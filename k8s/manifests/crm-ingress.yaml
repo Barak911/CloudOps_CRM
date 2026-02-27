@@ -1,0 +1,85 @@
+# Ingress resource for CRM CloudOps application stack
+# Routes all services through a single AWS NLB
+#
+# TLS (production):
+#   1. Install cert-manager:  helm install cert-manager jetstack/cert-manager --set installCRDs=true
+#   2. Create a ClusterIssuer for Let's Encrypt
+#   3. Uncomment the tls: section and cert-manager annotation below
+#   4. Set ssl-redirect to "true"
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: crm-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"   # uncomment for TLS
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  # tls:                              # uncomment for TLS
+  #   - hosts:
+  #       - crm.example.com
+  #     secretName: crm-tls-cert
+  rules:
+    - http:
+        paths:
+          # CRM Application - root path
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: crm-app
+                port:
+                  number: 80
+---
+# Separate Ingress for Kibana
+# Kibana is configured with server.basePath="/kibana" so we pass the path through unchanged
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kibana-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /kibana
+            pathType: Prefix
+            backend:
+              service:
+                name: crm-stack-kibana
+                port:
+                  number: 5601
+---
+# Separate Ingress for Grafana (runs in monitoring namespace)
+# Grafana is configured with serve_from_sub_path=true and root_url=/grafana
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana-ingress
+  namespace: monitoring
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus-grafana
+                port:
+                  number: 80
