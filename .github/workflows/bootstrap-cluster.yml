@@ -215,7 +215,14 @@ jobs:
             --from-literal=username=elastic \
             --from-literal=password="$ES_PASSWORD" \
             -n default --dry-run=client -o yaml | kubectl apply -f -
-          echo "Elasticsearch credentials secret created"
+
+          # Label the secret so Helm can adopt it (without these, helm upgrade fails)
+          kubectl label secret elasticsearch-master-credentials \
+            app.kubernetes.io/managed-by=Helm -n default --overwrite
+          kubectl annotate secret elasticsearch-master-credentials \
+            meta.helm.sh/release-name=crm-stack \
+            meta.helm.sh/release-namespace=default -n default --overwrite
+          echo "Elasticsearch credentials secret created (with Helm ownership labels)"
 
           # Apply Nginx Ingress first so ArgoCD can start deploying ES
           echo "Deploying CRM stack directly (first-time bootstrap with --no-hooks)..."
