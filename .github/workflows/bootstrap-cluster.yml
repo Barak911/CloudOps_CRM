@@ -196,11 +196,13 @@ jobs:
           kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=120s
           echo "ArgoCD server is ready"
 
-      - name: Deploy ArgoCD Ingress
+      - name: Clean up stale admission webhooks
         run: |
-          echo "Deploying ArgoCD Ingress..."
-          kubectl apply -f k8s/argocd/argocd-ingress.yaml
-          echo "ArgoCD Ingress deployed at /argocd"
+          # Remove stale Nginx admission webhook from previous installs
+          # (prevents "service not found" errors when creating Ingress resources)
+          kubectl delete validatingwebhookconfiguration nginx-ingress-ingress-nginx-admission 2>/dev/null && \
+            echo "Removed stale nginx admission webhook" || \
+            echo "No stale webhook found (clean cluster)"
 
       - name: Bootstrap Elasticsearch and Kibana Secrets
         run: |
@@ -312,6 +314,12 @@ jobs:
             fi
             sleep 20
           done
+
+      - name: Deploy ArgoCD Ingress
+        run: |
+          echo "Deploying ArgoCD Ingress (Nginx Ingress Controller is now running)..."
+          kubectl apply -f k8s/argocd/argocd-ingress.yaml
+          echo "ArgoCD Ingress deployed at /argocd"
 
       - name: Wait for CRM Stack Sync
         run: |
