@@ -21,7 +21,7 @@ crm-app:
 
   image:
     repository: 253490775265.dkr.ecr.us-east-1.amazonaws.com/crm-app
-    tag: "81142faebf9481a53da78066b9cca7d4e5a2d735"
+    tag: "910a609c2d0e2ffea95d89646ba4df2723280896"
     pullPolicy: Always
 
   service:
