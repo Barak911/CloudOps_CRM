@@ -1031,7 +1031,7 @@ jobs:
           echo "Testing Prometheus health..."
 
           # Port-forward to Prometheus
-          kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+          kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-prometheus 9090:9090 &
           PF_PID=$!
           sleep 10
 
@@ -1051,7 +1051,7 @@ jobs:
         run: |
           echo "Testing Prometheus targets..."
 
-          kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+          kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-prometheus 9090:9090 &
           PF_PID=$!
           sleep 10
 
@@ -1072,7 +1072,7 @@ jobs:
           echo "Testing CRM application metrics collection..."
 
           # Port-forward to Prometheus
-          kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090 &
+          kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-prometheus 9090:9090 &
           PF_PID=$!
           sleep 10
 
@@ -1211,7 +1211,7 @@ jobs:
           echo "- **Kibana Dashboard**: http://$INGRESS_URL/kibana"
           echo "- **Grafana Dashboard**: http://$INGRESS_URL/grafana"
           echo "- **ArgoCD Dashboard**: http://$INGRESS_URL/argocd"
-          echo "- **Prometheus**: Internal (prometheus-kube-prometheus-prometheus.monitoring.svc:9090)"
+          echo "- **Prometheus**: Internal (prometheus-stack-kube-prom-prometheus.monitoring.svc:9090)"
           echo "- **Elasticsearch**: Internal (elasticsearch-master.default.svc:9200)"
           echo ""
           echo "## Credentials"
