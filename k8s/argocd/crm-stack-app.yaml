@@ -23,6 +23,19 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: default
+  ignoreDifferences:
+    # ES auto-generated TLS certs change on every helm template render
+    - group: ""
+      kind: Secret
+      name: elasticsearch-master-certs
+      jsonPointers:
+        - /data
+    # StatefulSet volumeClaimTemplates are immutable after creation;
+    # live state includes extra fields (apiVersion, kind) not in the template
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates
   syncPolicy:
     automated:
       selfHeal: true
