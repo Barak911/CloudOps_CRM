@@ -318,8 +318,15 @@ jobs:
       - name: Deploy ArgoCD Ingress
         run: |
           echo "Deploying ArgoCD Ingress (Nginx Ingress Controller is now running)..."
-          kubectl apply -f k8s/argocd/argocd-ingress.yaml
-          echo "ArgoCD Ingress deployed at /argocd"
+          # Retry loop: admission webhook cert may take a moment to be trusted
+          for i in {1..6}; do
+            if kubectl apply -f k8s/argocd/argocd-ingress.yaml 2>&1; then
+              echo "ArgoCD Ingress deployed at /argocd"
+              break
+            fi
+            echo "Attempt $i/6: Admission webhook not ready, retrying in 10s..."
+            sleep 10
+          done
 
       - name: Wait for CRM Stack Sync
         run: |
