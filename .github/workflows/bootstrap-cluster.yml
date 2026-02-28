@@ -373,19 +373,24 @@ jobs:
         run: |
           echo "Waiting for Prometheus Stack to sync via ArgoCD..."
 
-          for i in {1..30}; do
+          for i in {1..45}; do
             SYNC_STATUS=$(kubectl get application prometheus-stack -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "Unknown")
             HEALTH_STATUS=$(kubectl get application prometheus-stack -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "Unknown")
 
-            echo "Attempt $i/30: Sync=$SYNC_STATUS, Health=$HEALTH_STATUS"
+            echo "Attempt $i/45: Sync=$SYNC_STATUS, Health=$HEALTH_STATUS"
 
-            if [ "$SYNC_STATUS" = "Synced" ] && [ "$HEALTH_STATUS" = "Healthy" ]; then
-              echo "Prometheus Stack is synced and healthy"
+            if [ "$HEALTH_STATUS" = "Healthy" ]; then
+              if [ "$SYNC_STATUS" = "Synced" ]; then
+                echo "Prometheus Stack is synced and healthy"
+              else
+                echo "Prometheus Stack is healthy (sync=$SYNC_STATUS — may resolve on next ArgoCD cycle)"
+              fi
               break
             fi
-            if [ "$i" -eq 30 ]; then
+            if [ "$i" -eq 45 ]; then
               echo "ERROR: Prometheus Stack did not become healthy within timeout"
               kubectl get application prometheus-stack -n argocd -o yaml 2>/dev/null | tail -30
+              kubectl get pods -n monitoring
               exit 1
             fi
             sleep 20

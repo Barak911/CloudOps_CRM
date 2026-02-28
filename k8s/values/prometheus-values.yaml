@@ -119,6 +119,15 @@ kube-state-metrics:
       cpu: 100m
       memory: 256Mi
 
+# Prometheus Operator configuration
+prometheusOperator:
+  # Disable admission webhooks — their pre-install/pre-upgrade hooks
+  # deadlock ArgoCD's PreSync phase (same class of issue as Kibana hooks).
+  # Admission webhooks validate PrometheusRule/AlertmanagerConfig CRDs
+  # which is unnecessary for this deployment.
+  admissionWebhooks:
+    enabled: false
+
 # Disable components not needed for basic monitoring
 kubeApiServer:
   enabled: true
