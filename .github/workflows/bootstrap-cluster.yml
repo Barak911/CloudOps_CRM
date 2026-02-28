@@ -269,6 +269,10 @@ jobs:
               --from-literal=token="$TOKEN" \
               -n default --dry-run=client -o yaml | kubectl apply -f -
             echo "Kibana ES token secret created"
+
+            # Restart Kibana to pick up the new token (idempotent — handles re-deploy case
+            # where Kibana is running with a stale token from a previous bootstrap)
+            kubectl rollout restart deployment crm-stack-kibana -n default 2>/dev/null || true
           else
             echo "WARNING: Could not create Kibana token — Kibana may need manual intervention"
           fi
