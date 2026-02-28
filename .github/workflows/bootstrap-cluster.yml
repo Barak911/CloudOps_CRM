@@ -210,13 +210,19 @@ jobs:
           echo "This prevents a deadlock: Kibana's Helm pre-install hook needs ES running,"
           echo "but ArgoCD maps it to PreSync which blocks ES deployment."
 
-          # Generate ES password and create credentials secret
-          ES_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-          kubectl create namespace default 2>/dev/null || true
-          kubectl create secret generic elasticsearch-master-credentials \
-            --from-literal=username=elastic \
-            --from-literal=password="$ES_PASSWORD" \
-            -n default --dry-run=client -o yaml | kubectl apply -f -
+          # Reuse existing ES password or generate a new one (prevents auth mismatch on re-deploy)
+          EXISTING_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)
+          if [ -n "$EXISTING_PASSWORD" ]; then
+            ES_PASSWORD="$EXISTING_PASSWORD"
+            echo "Reusing existing Elasticsearch password from credentials secret"
+          else
+            ES_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
+            kubectl create namespace default 2>/dev/null || true
+            kubectl create secret generic elasticsearch-master-credentials \
+              --from-literal=username=elastic \
+              --from-literal=password="$ES_PASSWORD" \
+              -n default --dry-run=client -o yaml | kubectl apply -f -
+          fi
 
           # Label the secret so Helm can adopt it (without these, helm upgrade fails)
           kubectl label secret elasticsearch-master-credentials \
