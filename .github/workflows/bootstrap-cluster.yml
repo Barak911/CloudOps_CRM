@@ -1195,87 +1195,113 @@ jobs:
           # Get Ingress URL
           INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Provisioning...")
 
-          echo "# Full Stack Deployment Summary"
-          echo ""
-          echo "## Build Information"
-          echo "- **Commit SHA**: ${{ github.sha }}"
-          echo "- **Image Tag**: ${{ needs.build-and-push.outputs.image-tag }}"
-          echo "- **ECR Registry**: ${{ needs.build-and-push.outputs.ecr-registry }}"
-          echo ""
-          echo "## Cluster Information"
-          echo "- **Cluster**: ${{ env.EKS_CLUSTER_NAME }}"
-          echo "- **Region**: ${{ env.AWS_REGION }}"
-          echo "- **Deployment Method**: ArgoCD GitOps"
-          echo "- **Namespace**: default"
-          echo "- **Monitoring Namespace**: monitoring"
-          echo ""
-          echo "## ArgoCD Application Status"
+          # Collect command outputs for code blocks
+          HELM_RELEASES=$(helm list -A 2>/dev/null || echo "No Helm releases found")
+          DEPLOYMENT_STATUS=$(kubectl get all -n default -o wide 2>/dev/null || echo "No resources found")
+          INGRESS_STATUS=$(kubectl get ingress -A 2>/dev/null || echo "No ingress resources found")
+          NODE_USAGE=$(kubectl top nodes 2>/dev/null || echo "Metrics server not available")
+          POD_USAGE=$(kubectl top pods -n default 2>/dev/null || echo "Metrics server not available")
 
-          for app in nginx-ingress crm-stack prometheus-stack crm-manifests; do
-            SYNC=$(kubectl get application $app -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "N/A")
-            HEALTH=$(kubectl get application $app -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "N/A")
-            echo "- **$app**: Sync=$SYNC, Health=$HEALTH"
-          done
-
-          echo ""
-          echo "## Application URLs (via Nginx Ingress)"
-          echo "- **Ingress LoadBalancer**: http://$INGRESS_URL"
-          echo "- **CRM Application**: http://$INGRESS_URL/"
-          echo "- **Kibana Dashboard**: http://$INGRESS_URL/kibana"
-          echo "- **Grafana Dashboard**: http://$INGRESS_URL/grafana"
-          echo "- **ArgoCD Dashboard**: http://$INGRESS_URL/argocd"
-          echo "- **Prometheus**: Internal (prometheus-stack-kube-prom-prometheus.monitoring.svc:9090)"
-          echo "- **Elasticsearch**: Internal (elasticsearch-master.default.svc:9200)"
-          echo ""
-          echo "## Credentials"
-          echo "- **Elasticsearch User**: elastic"
-          echo "- **Elasticsearch Password**: (retrieve from k8s secret)"
-          echo "- **Kibana**: Use Elasticsearch credentials"
-          echo "- **Grafana User**: admin"
-          echo "- **Grafana Password**: (set during deployment)"
-          echo "- **ArgoCD Admin Password**: (retrieve with: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d)"
-          echo ""
-          echo "## Helm Releases (managed by ArgoCD)"
-          helm list -A
-          echo ""
-          echo "## Deployment Status"
-          kubectl get all -n default -o wide
-          echo ""
-          echo "## Ingress Status"
-          kubectl get ingress -A
-          echo ""
-          echo "## Resource Usage"
-          kubectl top nodes 2>/dev/null || echo "Metrics server not available"
-          kubectl top pods -n default 2>/dev/null || echo "Metrics server not available"
-          echo ""
-          echo "## Job Results"
-          echo "- **Build and Push**: ${{ needs.build-and-push.result }}"
-          echo "- **Deploy via ArgoCD**: ${{ needs.deploy-argocd.result }}"
-          echo "- **Test CRM Application**: ${{ needs.test-crm-application.result }}"
-          echo "- **Test Observability**: ${{ needs.test-observability.result }}"
-          echo ""
-          echo "## Access Instructions"
-          echo ""
-          echo "### CRM Application"
-          echo '```bash'
-          echo "curl http://$INGRESS_URL/health"
-          echo '```'
-          echo ""
-          echo "### ArgoCD Dashboard"
-          echo "1. Open: http://$INGRESS_URL/argocd"
-          echo "2. Username: admin"
-          echo '3. Password: `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='"'"'{.data.password}'"'"' | base64 -d`'
-          echo ""
-          echo "### Kibana Dashboard (Logging)"
-          echo "1. Open: http://$INGRESS_URL/kibana"
-          echo "2. Login with: elastic / (retrieve from k8s secret)"
-          echo "3. Create index pattern: logs-* (indices: logs-crm, logs-mongodb, logs-system)"
-          echo ""
-          echo "### Grafana Dashboard (Monitoring)"
-          echo "1. Open: http://$INGRESS_URL/grafana"
-          echo "2. Login with: admin / (password set during deployment)"
-          echo "3. Explore pre-installed Kubernetes dashboards"
-          echo "4. View CRM metrics: /metrics endpoint data"
-          echo ""
-          echo "---"
-          echo "Bootstrap Complete — cluster is fully operational (via ArgoCD GitOps)!"
+          # Build the report — written to both stdout (logs) and GitHub Step Summary
+          {
+            echo "# CloudOps CRM — Full Stack Deployment Report"
+            echo ""
+            echo "## Job Results"
+            echo "| Job | Result |"
+            echo "|-----|--------|"
+            echo "| Build and Push | \`${{ needs.build-and-push.result }}\` |"
+            echo "| Deploy via ArgoCD | \`${{ needs.deploy-argocd.result }}\` |"
+            echo "| Test CRM Application | \`${{ needs.test-crm-application.result }}\` |"
+            echo "| Test Observability | \`${{ needs.test-observability.result }}\` |"
+            echo ""
+            echo "## Build Information"
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Commit SHA | \`${{ github.sha }}\` |"
+            echo "| Image Tag | \`${{ needs.build-and-push.outputs.image-tag }}\` |"
+            echo "| ECR Registry | \`${{ needs.build-and-push.outputs.ecr-registry }}\` |"
+            echo ""
+            echo "## Cluster Information"
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Cluster | \`${{ env.EKS_CLUSTER_NAME }}\` |"
+            echo "| Region | \`${{ env.AWS_REGION }}\` |"
+            echo "| Deployment Method | ArgoCD GitOps |"
+            echo "| App Namespace | \`default\` |"
+            echo "| Monitoring Namespace | \`monitoring\` |"
+            echo ""
+            echo "## ArgoCD Application Status"
+            echo "| Application | Sync | Health |"
+            echo "|-------------|------|--------|"
+            for app in nginx-ingress crm-stack prometheus-stack crm-manifests; do
+              SYNC=$(kubectl get application "$app" -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || echo "N/A")
+              HEALTH=$(kubectl get application "$app" -n argocd -o jsonpath='{.status.health.status}' 2>/dev/null || echo "N/A")
+              echo "| $app | \`$SYNC\` | \`$HEALTH\` |"
+            done
+            echo ""
+            echo "## Application URLs"
+            echo "| Service | URL |"
+            echo "|---------|-----|"
+            echo "| CRM Application | http://$INGRESS_URL/ |"
+            echo "| Kibana (Logging) | http://$INGRESS_URL/kibana |"
+            echo "| Grafana (Monitoring) | http://$INGRESS_URL/grafana |"
+            echo "| ArgoCD Dashboard | http://$INGRESS_URL/argocd |"
+            echo "| Prometheus | \`prometheus-stack-kube-prom-prometheus.monitoring.svc:9090\` (internal) |"
+            echo "| Elasticsearch | \`elasticsearch-master.default.svc:9200\` (internal) |"
+            echo ""
+            echo "## Credentials"
+            echo "| Service | Username | Password |"
+            echo "|---------|----------|----------|"
+            echo "| Elasticsearch | \`elastic\` | \`kubectl get secret elasticsearch-master-credentials -o jsonpath='{.data.password}' \\| base64 -d\` |"
+            echo "| Kibana | \`elastic\` | Same as Elasticsearch |"
+            echo "| Grafana | \`admin\` | Set during deployment |"
+            echo "| ArgoCD | \`admin\` | \`kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' \\| base64 -d\` |"
+            echo ""
+            echo "## Helm Releases"
+            echo '```'
+            echo "$HELM_RELEASES"
+            echo '```'
+            echo ""
+            echo "## Deployment Status"
+            echo '```'
+            echo "$DEPLOYMENT_STATUS"
+            echo '```'
+            echo ""
+            echo "## Ingress Status"
+            echo '```'
+            echo "$INGRESS_STATUS"
+            echo '```'
+            echo ""
+            echo "## Resource Usage"
+            echo '```'
+            echo "$NODE_USAGE"
+            echo ""
+            echo "$POD_USAGE"
+            echo '```'
+            echo ""
+            echo "## Access Instructions"
+            echo ""
+            echo "### CRM Application"
+            echo '```bash'
+            echo "curl http://$INGRESS_URL/health"
+            echo '```'
+            echo ""
+            echo "### ArgoCD Dashboard"
+            echo "1. Open: http://$INGRESS_URL/argocd"
+            echo "2. Username: \`admin\`"
+            echo '3. Password: `kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='"'"'{.data.password}'"'"' | base64 -d`'
+            echo ""
+            echo "### Kibana Dashboard (Logging)"
+            echo "1. Open: http://$INGRESS_URL/kibana"
+            echo "2. Login with Elasticsearch credentials"
+            echo "3. Create index pattern: \`logs-*\` (indices: logs-crm, logs-mongodb, logs-system)"
+            echo ""
+            echo "### Grafana Dashboard (Monitoring)"
+            echo "1. Open: http://$INGRESS_URL/grafana"
+            echo "2. Login with: \`admin\` / (password set during deployment)"
+            echo "3. Explore pre-installed Kubernetes dashboards"
+            echo "4. View CRM metrics via \`/metrics\` endpoint data"
+            echo ""
+            echo "---"
+            echo "*Bootstrap complete — cluster is fully operational via ArgoCD GitOps.*"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
