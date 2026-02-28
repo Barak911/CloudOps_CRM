@@ -54,7 +54,7 @@ module "eks" {
   tags = { project = "CloudOps_CRM" }
 
   # Enable cluster access management
-  enable_cluster_creator_admin_permissions = false
+  enable_cluster_creator_admin_permissions = true
 
   # Grant access to additional IAM principals
   access_entries = merge(
