@@ -127,6 +127,11 @@ prometheusOperator:
   # which is unnecessary for this deployment.
   admissionWebhooks:
     enabled: false
+  # Disable TLS on the operator's webhook server — without admission webhooks
+  # the TLS cert secret is never created, causing the operator pod to fail
+  # with "secret not found" on the tls-secret volume mount.
+  tls:
+    enabled: false
 
 # Disable components not needed for basic monitoring
 kubeApiServer:
