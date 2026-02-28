@@ -24,7 +24,8 @@ spec:
     server: https://kubernetes.default.svc
     namespace: default
   ignoreDifferences:
-    # ES credentials use randAlphaNum — ignore so ArgoCD doesn't overwrite the bootstrap password
+    # ES credentials use randAlphaNum — ignore + RespectIgnoreDifferences prevents
+    # ArgoCD from overwriting the bootstrap-created password during sync
     - group: ""
       kind: Secret
       name: elasticsearch-master-credentials
@@ -55,3 +56,4 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true
+      - RespectIgnoreDifferences=true
