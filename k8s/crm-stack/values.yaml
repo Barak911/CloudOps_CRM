@@ -111,8 +111,10 @@ elasticsearch:
   esJavaOpts: "-Xmx512m -Xms512m"
 
   secret:
-    enabled: true
-    # Password is set during deployment via --set or GitHub Actions secret ES_PASSWORD
+    enabled: false
+    # Credentials secret is pre-created by the bootstrap workflow with Helm ownership labels.
+    # Disabling chart-managed secret prevents ArgoCD from overwriting it with a random password
+    # (the chart uses randAlphaNum which produces a different value on every render).
 
   persistence:
     enabled: true
