@@ -422,7 +422,7 @@ jobs:
           echo "Waiting for Nginx Ingress LoadBalancer to provision..."
 
           for i in {1..30}; do
-            INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
             if [ -n "$INGRESS_URL" ]; then
               echo "url=$INGRESS_URL" >> $GITHUB_OUTPUT
               echo "Nginx Ingress LoadBalancer URL: $INGRESS_URL"
@@ -568,7 +568,7 @@ jobs:
       - name: Get Ingress URL
         id: get-lb
         run: |
-          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "url=$INGRESS_URL" >> $GITHUB_OUTPUT
           echo "CRM App URL (via Ingress): http://$INGRESS_URL"
 
@@ -963,7 +963,7 @@ jobs:
           echo "Testing Kibana accessibility via Ingress..."
 
           # Get Ingress URL
-          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
 
           echo "Kibana URL: http://$INGRESS_URL/kibana"
@@ -1094,7 +1094,7 @@ jobs:
         run: |
           echo "Testing Grafana accessibility via Ingress..."
 
-          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "Grafana URL: http://$INGRESS_URL/grafana"
 
           # Test Grafana health through Ingress
@@ -1118,7 +1118,7 @@ jobs:
         run: |
           echo "Testing ArgoCD accessibility via Ingress..."
 
-          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "ArgoCD URL: http://$INGRESS_URL/argocd"
 
           # Test ArgoCD through Ingress
@@ -1180,7 +1180,7 @@ jobs:
       - name: Generate Deployment Summary
         run: |
           # Get Ingress URL
-          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Provisioning...")
+          INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "Provisioning...")
 
           echo "# Full Stack Deployment Summary"
           echo ""
