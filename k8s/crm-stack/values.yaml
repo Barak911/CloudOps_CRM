@@ -111,10 +111,10 @@ elasticsearch:
   esJavaOpts: "-Xmx512m -Xms512m"
 
   secret:
-    enabled: false
-    # Credentials secret is pre-created by the bootstrap workflow with Helm ownership labels.
-    # Disabling chart-managed secret prevents ArgoCD from overwriting it with a random password
-    # (the chart uses randAlphaNum which produces a different value on every render).
+    enabled: true
+    # The chart generates a random password via randAlphaNum on each render.
+    # The ArgoCD Application uses ignoreDifferences on /data to prevent
+    # overwriting the bootstrap-created password with a new random one.
 
   persistence:
     enabled: true

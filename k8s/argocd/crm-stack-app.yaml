@@ -24,6 +24,12 @@ spec:
     server: https://kubernetes.default.svc
     namespace: default
   ignoreDifferences:
+    # ES credentials use randAlphaNum — ignore so ArgoCD doesn't overwrite the bootstrap password
+    - group: ""
+      kind: Secret
+      name: elasticsearch-master-credentials
+      jsonPointers:
+        - /data
     # ES auto-generated TLS certs change on every helm template render
     - group: ""
       kind: Secret
