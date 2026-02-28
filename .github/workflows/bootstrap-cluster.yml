@@ -586,6 +586,15 @@ jobs:
           done
           sleep 10
 
+      - name: Clean up test data from previous runs
+        run: |
+          LB_URL="http://${{ steps.get-lb.outputs.url }}"
+          echo "Cleaning up test data from any previous bootstrap runs..."
+          for user in test-user-1 test-user-2 test-user-delete; do
+            curl -s -X DELETE "$LB_URL/person/$user" >/dev/null 2>&1 || true
+          done
+          echo "Test data cleanup complete"
+
       - name: Test API Root Endpoint
         run: |
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
