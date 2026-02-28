@@ -252,10 +252,17 @@ jobs:
 
           # Create Kibana ES service account token via ES API
           echo "Creating Kibana service account token..."
+
+          # Delete existing token first (idempotent re-deploy)
+          kubectl exec elasticsearch-master-0 -n default -- curl -s -k \
+            -u "elastic:${ES_PASSWORD}" \
+            -X DELETE "https://localhost:9200/_security/service/elastic/kibana/credential/token/crm-stack-kibana" \
+            2>/dev/null || true
+
           TOKEN=$(kubectl exec elasticsearch-master-0 -n default -- curl -s -k \
             -u "elastic:${ES_PASSWORD}" \
             -X POST "https://localhost:9200/_security/service/elastic/kibana/credential/token/crm-stack-kibana" \
-            2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['token']['value'])" 2>/dev/null)
+            2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['token']['value'])" 2>/dev/null) || true
 
           if [ -n "$TOKEN" ]; then
             kubectl create secret generic crm-stack-kibana-es-token \
