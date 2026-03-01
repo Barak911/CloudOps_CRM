@@ -38,7 +38,7 @@ def test_api_info_endpoint(client):
     assert response.status_code == 200
     data = response.get_json()
     assert data['service'] == 'CRM REST API'
-    assert data['version'] == '3.0.0'
+    assert data['version'] == '3.1.0'
     assert 'endpoints' in data
 
 def test_get_persons_empty(client):
