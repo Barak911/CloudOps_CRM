@@ -62,7 +62,7 @@ jobs:
 
       # Security: Container image vulnerability scan
       - name: Scan container image for vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.34.1
         with:
           image-ref: '${{ env.ECR_REPOSITORY }}:${{ steps.set-tag.outputs.tag }}'
           format: 'table'
