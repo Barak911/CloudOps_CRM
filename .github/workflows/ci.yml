@@ -62,13 +62,15 @@ jobs:
 
       # Security: Container image vulnerability scan
       - name: Scan container image for vulnerabilities
-        uses: aquasecurity/trivy-action@0.34.1
-        with:
-          image-ref: '${{ env.ECR_REPOSITORY }}:${{ steps.set-tag.outputs.tag }}'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: 'true'
-          severity: 'CRITICAL,HIGH'
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --severity CRITICAL,HIGH \
+            --format table \
+            ${{ env.ECR_REPOSITORY }}:${{ steps.set-tag.outputs.tag }}
 
       # Stage 5: End-to-End Testing
       - name: Start test environment
