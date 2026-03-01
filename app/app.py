@@ -100,7 +100,7 @@ def api_info():
     """API information and endpoint listing"""
     return jsonify({
         "service": "CRM REST API",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "endpoints": {
             "GET  /health": "Health check",
             "GET  /metrics": "Prometheus metrics",
