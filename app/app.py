@@ -19,7 +19,7 @@ mongo = PyMongo(app)
 metrics = PrometheusMetrics(app)
 
 # Custom metrics
-metrics.info('crm_app_info', 'CRM Application info', version='3.0.0', environment=os.getenv("ENVIRONMENT", "production"))
+metrics.info('crm_app_info', 'CRM Application info', version='3.1.0', environment=os.getenv("ENVIRONMENT", "production"))
 
 # Configure JSON structured logging
 class JsonFormatter(logging.Formatter):
