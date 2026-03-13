@@ -1125,6 +1125,10 @@ jobs:
         run: |
           echo "Testing Prometheus health..."
 
+          # Wait for Prometheus pod to be running
+          echo "Waiting for Prometheus pod to be ready..."
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=180s || true
+
           # Port-forward to Prometheus
           kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-prometheus 9090:9090 &
           PF_PID=$!
@@ -1145,6 +1149,9 @@ jobs:
       - name: Test Prometheus Targets
         run: |
           echo "Testing Prometheus targets..."
+
+          # Ensure Prometheus pod is ready
+          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=60s || true
 
           kubectl port-forward -n monitoring svc/prometheus-stack-kube-prom-prometheus 9090:9090 &
           PF_PID=$!
