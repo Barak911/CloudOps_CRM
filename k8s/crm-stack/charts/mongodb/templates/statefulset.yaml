@@ -41,12 +41,12 @@ spec:
         - name: MONGO_INITDB_ROOT_USERNAME
           valueFrom:
             secretKeyRef:
-              name: {{ include "mongodb.fullname" . }}-credentials
+              name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
               key: username
         - name: MONGO_INITDB_ROOT_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: {{ include "mongodb.fullname" . }}-credentials
+              name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
               key: password
         {{- end }}
         resources:

@@ -12,19 +12,20 @@ metadata:
   name: crm-ingress
   namespace: default
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
-    # cert-manager.io/cluster-issuer: "letsencrypt-prod"   # uncomment for TLS
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
 spec:
   ingressClassName: nginx
-  # tls:                              # uncomment for TLS
-  #   - hosts:
-  #       - crm.example.com
-  #     secretName: crm-tls-cert
+  tls:
+    - hosts:
+        - crm.example.com
+      secretName: crm-tls-cert
   rules:
-    - http:
+    - host: crm.example.com
+      http:
         paths:
           # CRM Application - root path
           - path: /
@@ -43,14 +44,20 @@ metadata:
   name: kibana-ingress
   namespace: default
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - crm.example.com
+      secretName: crm-tls-cert
   rules:
-    - http:
+    - host: crm.example.com
+      http:
         paths:
           - path: /kibana
             pathType: Prefix
@@ -68,13 +75,19 @@ metadata:
   name: grafana-ingress
   namespace: monitoring
   annotations:
-    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+        - crm.example.com
+      secretName: crm-tls-cert
   rules:
-    - http:
+    - host: crm.example.com
+      http:
         paths:
           - path: /grafana
             pathType: Prefix

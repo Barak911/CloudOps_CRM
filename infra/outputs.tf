@@ -32,3 +32,8 @@ output "ecr_repository_name" {
   description = "Name of the ECR repository"
   value       = aws_ecr_repository.demo_crm.name
 }
+
+output "external_secrets_role_arn" {
+  description = "IAM role ARN for ExternalSecrets Operator service account"
+  value       = aws_iam_role.external_secrets.arn
+}

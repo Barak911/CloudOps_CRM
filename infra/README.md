@@ -4,10 +4,11 @@ Terraform code for provisioning AWS infrastructure for the CRM application.
 
 ## Components
 
-- **EKS Cluster** -- Kubernetes 1.31 with managed node groups (t3a.medium, ON_DEMAND)
+- **EKS Cluster** -- Kubernetes 1.31 with managed node groups (t3a.medium, ON_DEMAND), CIDR-restricted public endpoint
 - **ECR Repository** -- Container registry with immutable tags and scan-on-push
-- **GitHub OIDC Role** -- Passwordless CI/CD authentication for GitHub Actions
+- **GitHub OIDC Role** -- Least-privilege CI/CD authentication (namespace-scoped EKS edit, repo-scoped ECR push)
 - **EBS CSI Driver** -- Dynamic volume provisioning with gp3 StorageClass
+- **Secrets Manager** -- MongoDB credentials with IRSA-backed ExternalSecrets Operator access
 - **Default VPC** -- Public subnets (no NAT Gateway costs)
 
 ## Quick Start
@@ -43,8 +44,10 @@ Create a `terraform.tfvars` file (gitignored):
 ```hcl
 github_repo_owner  = "<your-github-username>"
 developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
-# cluster_name     = "cloudops-eks-cluster"  # optional override
-# aws_region       = "us-east-1"             # optional override
+# cluster_name                       = "cloudops-eks-cluster"  # optional override
+# aws_region                         = "us-east-1"             # optional override
+# cluster_endpoint_public_access_cidrs = ["203.0.113.0/24"]    # restrict API access to your IP/VPN
+# ecr_force_destroy                  = true                    # allow terraform destroy to delete ECR repo
 ```
 
 ### Key Settings
@@ -56,6 +59,8 @@ developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
 | Capacity Type | ON_DEMAND | Reliable availability |
 | Node Scaling | 1-2 nodes | Auto-scaling range |
 | StorageClass | gp3 (default) | Encrypted EBS volumes |
+| Public Endpoint CIDRs | 0.0.0.0/0 | Restrict after initial setup |
+| ECR Force Destroy | false | Set true for cleanup workflow |
 
 ## Files
 
@@ -64,7 +69,8 @@ developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
 | `eks.tf` | EKS cluster and node groups |
 | `ecr.tf` | ECR repository |
 | `ebs-csi-driver.tf` | EBS CSI addon + gp3 StorageClass |
-| `github-oidc.tf` | GitHub Actions IAM role + policies |
+| `github-oidc.tf` | GitHub Actions IAM role + least-privilege policies |
+| `secrets.tf` | AWS Secrets Manager + IRSA role for ExternalSecrets Operator |
 | `provider.tf` | AWS and Kubernetes providers |
 | `backend.tf` | S3 remote state backend |
 | `variables.tf` | Input variables |
@@ -73,10 +79,24 @@ developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
 ## EKS Access
 
 Terraform creates EKS Access Entries for:
-1. **GitHub Actions OIDC role** -- CI/CD pipelines
-2. **Developer IAM user** -- kubectl access
+1. **GitHub Actions OIDC role** -- `AmazonEKSEditPolicy` scoped to the `default` namespace (least-privilege)
+2. **Developer IAM user** -- `AmazonEKSClusterAdminPolicy` (full access for interactive debugging)
 
-Both get `AmazonEKSClusterAdminPolicy`.
+## Secrets Management
+
+MongoDB credentials are stored in AWS Secrets Manager and synced to Kubernetes via the ExternalSecrets Operator:
+
+1. `secrets.tf` creates the Secrets Manager secret and seeds it with a generated password
+2. An IRSA role allows the ExternalSecrets service account to read the secret
+3. `k8s/manifests/external-secrets.yaml` defines the `SecretStore` and `ExternalSecret` resources
+4. The MongoDB chart references the externally-managed `mongodb-credentials` K8s Secret
+
+For local development, bypass ExternalSecrets with:
+```bash
+helm install crm-stack ./k8s/crm-stack \
+  --set mongodb.auth.existingSecret="" \
+  --set mongodb.auth.rootPassword=localdev123
+```
 
 ## Cleanup
 
@@ -85,8 +105,8 @@ Both get `AmazonEKSClusterAdminPolicy`.
 ```bash
 # 1. Run cleanup-deployment.yml in GitHub Actions (removes K8s resources + ECR images)
 # 2. Wait 2-3 minutes for AWS resource propagation
-# 3. Destroy infrastructure
-terraform destroy
+# 3. Destroy infrastructure (ecr_force_destroy allows ECR repo deletion)
+terraform destroy -var="ecr_force_destroy=true"
 ```
 
 This prevents orphaned Load Balancers and ECR deletion failures.

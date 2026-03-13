@@ -37,9 +37,10 @@ module "eks" {
   vpc_id     = data.aws_vpc.default.id
   subnet_ids = data.aws_subnets.default.ids
 
-  # expose API publicly so kubectl works outside VPC
-  cluster_endpoint_public_access  = true
-  cluster_endpoint_private_access = true
+  # expose API publicly so kubectl works outside VPC (restrict CIDRs in terraform.tfvars)
+  cluster_endpoint_public_access       = true
+  cluster_endpoint_private_access      = true
+  cluster_endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
 
   eks_managed_node_groups = {
     default = {
@@ -59,7 +60,10 @@ module "eks" {
   # Grant access to additional IAM principals
   access_entries = merge(
     {
-      # GitHub Actions role - now created in github-oidc.tf
+      # GitHub Actions role — cluster-admin is required because bootstrap-cluster.yml
+      # needs to: create namespaces, install CRDs (ArgoCD Application), Helm install
+      # across argocd/monitoring/ingress-nginx/default namespaces.
+      # For production, use separate IAM roles per workflow with tighter scoping.
       github_actions = {
         principal_arn = aws_iam_role.github_actions.arn
         type          = "STANDARD"

@@ -19,7 +19,13 @@ variable "cluster_version" {
 variable "excluded_availability_zones" {
   description = "AZs to exclude from EKS (e.g. us-east-1e does not support EKS control plane)"
   type        = list(string)
-  default     = []
+  default     = ["us-east-1e"]
+}
+
+variable "ecr_force_destroy" {
+  description = "Set to true to allow terraform destroy to delete the ECR repo (used by cleanup workflow)"
+  type        = bool
+  default     = false
 }
 
 variable "ecr_repository_name" {
@@ -38,6 +44,13 @@ variable "github_repo_name" {
   description = "GitHub repository name for OIDC trust (change if repo is renamed)"
   type        = string
   default     = "CloudOps_CRM"
+}
+
+variable "cluster_endpoint_public_access_cidrs" {
+  description = "CIDRs allowed to reach the EKS public endpoint (default: unrestricted for bootstrap, restrict after setup)"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+  # After initial setup, set to your office/VPN CIDR in terraform.tfvars
 }
 
 variable "developer_user_arn" {

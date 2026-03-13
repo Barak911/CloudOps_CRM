@@ -3,7 +3,6 @@
 
 server:
   extraArgs:
-    - --insecure
     - --rootpath=/argocd
 
   resources:

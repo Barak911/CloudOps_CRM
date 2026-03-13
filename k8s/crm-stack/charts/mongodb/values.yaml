@@ -39,12 +39,14 @@ healthCheck:
     periodSeconds: 5
     timeoutSeconds: 3
 
-# Authentication — set auth.enabled=true and supply credentials via --set or a Secret
+# Authentication — credentials are managed by ExternalSecrets Operator (see k8s/manifests/external-secrets.yaml)
+# To override for local dev, use: --set mongodb.auth.existingSecret="" --set mongodb.auth.rootPassword=<value>
 auth:
-  enabled: false
-  # rootUsername: admin
-  # rootPassword: ""          # override via --set mongodb.auth.rootPassword=<value>
-  # database: crm_db          # auto-created with root creds
+  enabled: true
+  existingSecret: mongodb-credentials  # managed by ExternalSecret; set to "" to use built-in secret
+  rootUsername: admin
+  rootPassword: ""                     # only used when existingSecret is empty
+  database: crm_db
 
 global:
   namespace: default

@@ -17,7 +17,8 @@ Built as a monorepo: application code, Helm charts, Terraform infrastructure, an
 | **Monitoring** | Prometheus, Grafana, ServiceMonitor CRDs |
 | **Logging** | Fluentd (DaemonSet) -> Elasticsearch -> Kibana |
 | **Networking** | Nginx Ingress Controller, single AWS NLB for all services |
-| **Security** | Pod security contexts, read-only root FS, Trivy + pip-audit scans |
+| **Secrets** | AWS Secrets Manager + ExternalSecrets Operator (IRSA) |
+| **Security** | Pod security contexts, read-only root FS, Trivy + pip-audit scans, least-privilege IAM |
 
 ## Architecture
 
@@ -98,7 +99,7 @@ CloudOps_CRM/
 │   │   ├── prometheus-app.yaml   # Prometheus + Grafana (multi-source)
 │   │   ├── nginx-ingress-app.yaml# Ingress Controller (multi-source)
 │   │   └── manifests-app.yaml    # Ingress rules, ServiceMonitor, dashboard
-│   ├── manifests/                # Plain K8s manifests (Ingress, ServiceMonitor)
+│   ├── manifests/                # Plain K8s manifests (Ingress, ServiceMonitor, ExternalSecrets)
 │   └── values/                   # Per-environment Helm value overrides
 │
 ├── infra/                        # Terraform (AWS)
@@ -106,6 +107,7 @@ CloudOps_CRM/
 │   ├── ecr.tf                    # Container registry (immutable tags)
 │   ├── github-oidc.tf            # OIDC federation (no stored AWS keys)
 │   ├── ebs-csi-driver.tf         # Persistent storage (gp3 default)
+│   ├── secrets.tf                # AWS Secrets Manager + IRSA for ExternalSecrets
 │   ├── backend.tf                # S3 remote state
 │   └── ARCHITECTURE.md           # Infrastructure documentation
 │
@@ -121,6 +123,8 @@ CloudOps_CRM/
 | **ArgoCD over Helm-in-CI** | Cluster state is always in Git. Drift detection + self-healing. No `kubectl` in pipelines. |
 | **Multi-source ArgoCD Apps** | Helm chart from one source, values from another — clean separation of config vs charts |
 | **OIDC federation** | GitHub Actions authenticates to AWS via short-lived tokens. Zero stored secrets. |
+| **ExternalSecrets** | MongoDB credentials stored in AWS Secrets Manager, synced to K8s via IRSA — no secrets in Git or CLI args |
+| **Least-privilege CI** | GitHub Actions scoped to ECR push + namespace-level EKS edit — no cluster-admin |
 | **Helm umbrella chart** | CRM app + MongoDB + EFK deployed as a single unit with shared config (namespace, labels) |
 | **Immutable ECR tags** | Every image tagged with commit SHA — no `latest` in production, full traceability |
 | **Pod security contexts** | `readOnlyRootFilesystem`, `runAsNonRoot`, `drop: ALL` capabilities — defense in depth |

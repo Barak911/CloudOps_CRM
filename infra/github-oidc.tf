@@ -37,48 +37,61 @@ resource "aws_iam_role" "github_actions" {
   }
 }
 
-# Attach necessary policies for GitHub Actions
-resource "aws_iam_role_policy_attachment" "github_actions_ecr" {
-  role       = aws_iam_role.github_actions.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
-}
-
-resource "aws_iam_role_policy_attachment" "github_actions_eks_describe" {
-  role       = aws_iam_role.github_actions.name
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-}
-
-# Custom policy for EKS access
-resource "aws_iam_policy" "github_actions_eks" {
-  name        = "github-actions-eks-access"
-  description = "Allow GitHub Actions to interact with EKS"
+# ECR push — scoped to the CRM repository only
+resource "aws_iam_policy" "github_actions_ecr" {
+  name        = "github-actions-ecr-push"
+  description = "Allow GitHub Actions to push images to the CRM ECR repo"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "ECRAuth"
+        Effect = "Allow"
+        Action = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRPush"
         Effect = "Allow"
         Action = [
-          "eks:DescribeCluster",
-          "eks:ListClusters",
-          "eks:DescribeNodegroup",
-          "eks:ListNodegroups",
-          "eks:AccessKubernetesApi",
-          "eks:ListAccessEntries",
-          "eks:DescribeAccessEntry",
-          "eks:CreateAccessEntry",
-          "eks:DeleteAccessEntry",
-          "eks:ListAssociatedAccessPolicies",
-          "eks:AssociateAccessPolicy",
-          "eks:DisassociateAccessPolicy"
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+          "ecr:PutImage"
         ]
-        Resource = "*"
+        Resource = aws_ecr_repository.demo_crm.arn
       }
     ]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "github_actions_eks_custom" {
+resource "aws_iam_role_policy_attachment" "github_actions_ecr" {
+  role       = aws_iam_role.github_actions.name
+  policy_arn = aws_iam_policy.github_actions_ecr.arn
+}
+
+# EKS — only describe cluster (for update-kubeconfig) — all K8s access is via the access entry
+resource "aws_iam_policy" "github_actions_eks" {
+  name        = "github-actions-eks-access"
+  description = "Allow GitHub Actions to describe the EKS cluster for kubeconfig"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["eks:DescribeCluster"]
+        Resource = module.eks.cluster_arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_actions_eks" {
   role       = aws_iam_role.github_actions.name
   policy_arn = aws_iam_policy.github_actions_eks.arn
 }

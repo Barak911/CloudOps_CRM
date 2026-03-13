@@ -142,6 +142,13 @@ elasticsearch:
       xpack.security.http.ssl.enabled: true
 
 # Kibana Configuration
+# IMPORTANT: ES credentials and Kibana service token are bootstrapped by the
+# bootstrap-cluster.yml GitHub Actions workflow (step "Bootstrap Elasticsearch
+# and Kibana Secrets"). For manual deployments, replicate that step's logic:
+#   1. Create elasticsearch-master-credentials secret with desired password
+#   2. Pass password via --set elasticsearch.secret.password=<value>
+#   3. After ES is ready, create service token and crm-stack-kibana-es-token secret
+#
 # NOTE: The Elastic Kibana Helm chart (v8.5.1) is ARCHIVED and has known bugs:
 #   - Issue #1766: Pre-upgrade hook fails with "secret already exists"
 #   - The hook uses POST instead of PUT to create K8s secrets
@@ -153,10 +160,10 @@ kibana:
   resources:
     requests:
       cpu: "100m"
-      memory: "256Mi"
-    limits:
-      cpu: "250m"
       memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
 
   service:
     type: ClusterIP
