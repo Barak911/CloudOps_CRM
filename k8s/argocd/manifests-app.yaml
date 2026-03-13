@@ -13,6 +13,8 @@ spec:
     repoURL: https://github.com/REPLACE_OWNER/CloudOps_CRM.git
     targetRevision: main
     path: k8s/manifests
+    directory:
+      exclude: 'external-secrets.yaml'
   destination:
     server: https://kubernetes.default.svc
   syncPolicy:

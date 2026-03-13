@@ -4,9 +4,9 @@ Terraform code for provisioning AWS infrastructure for the CRM application.
 
 ## Components
 
-- **EKS Cluster** -- Kubernetes 1.31 with managed node groups (t3a.medium, ON_DEMAND), CIDR-restricted public endpoint
+- **EKS Cluster** -- Kubernetes 1.31 with managed node groups (t3a.medium, ON_DEMAND), public endpoint (restrict via `cluster_endpoint_public_access_cidrs`)
 - **ECR Repository** -- Container registry with immutable tags and scan-on-push
-- **GitHub OIDC Role** -- Least-privilege CI/CD authentication (namespace-scoped EKS edit, repo-scoped ECR push)
+- **GitHub OIDC Role** -- CI/CD authentication via OIDC federation (cluster-admin for bootstrap; see README for production hardening)
 - **EBS CSI Driver** -- Dynamic volume provisioning with gp3 StorageClass
 - **Secrets Manager** -- MongoDB credentials with IRSA-backed ExternalSecrets Operator access
 - **Default VPC** -- Public subnets (no NAT Gateway costs)
@@ -79,8 +79,8 @@ developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
 ## EKS Access
 
 Terraform creates EKS Access Entries for:
-1. **GitHub Actions OIDC role** -- `AmazonEKSEditPolicy` scoped to the `default` namespace (least-privilege)
-2. **Developer IAM user** -- `AmazonEKSClusterAdminPolicy` (full access for interactive debugging)
+1. **GitHub Actions OIDC role** -- `AmazonEKSClusterAdminPolicy` (required for bootstrap: CRD installs, namespace creation, Helm across namespaces). For day-2 CI, consider scoping to ECR push + namespace edit.
+2. **Developer IAM user** -- `AmazonEKSClusterAdminPolicy` (full access for interactive debugging, optional via `developer_user_arn`)
 
 ## Secrets Management
 
