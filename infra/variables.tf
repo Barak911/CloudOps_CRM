@@ -23,9 +23,9 @@ variable "excluded_availability_zones" {
 }
 
 variable "ecr_force_destroy" {
-  description = "Set to true to allow terraform destroy to delete the ECR repo (used by cleanup workflow)"
+  description = "Allow terraform destroy to delete the ECR repo even when it contains images"
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "ecr_repository_name" {
