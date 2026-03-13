@@ -13,7 +13,7 @@ Built as a monorepo: application code, Helm charts, Terraform infrastructure, an
 | **Orchestration** | Kubernetes (AWS EKS), Helm umbrella chart |
 | **GitOps** | ArgoCD — auto-syncs from Git after one-time bootstrap |
 | **CI/CD** | GitHub Actions with OIDC auth (no stored AWS keys) |
-| **Infrastructure** | Terraform (EKS, ECR, IAM OIDC, EBS CSI, KMS) |
+| **Infrastructure** | Terraform (EKS, ECR, IAM OIDC, EBS CSI) |
 | **Monitoring** | Prometheus, Grafana, ServiceMonitor CRDs |
 | **Logging** | Fluentd (DaemonSet) -> Elasticsearch -> Kibana |
 | **Networking** | Nginx Ingress Controller, single AWS NLB for all services |
@@ -145,7 +145,7 @@ This project is a fully working demo. For production use, consider the following
 | **IAM — CI role** | `cluster-admin` for both bootstrap and day-2 CI | Separate bootstrap role (cluster-admin) from day-2 CI role (ECR push + namespace edit) |
 | **IAM — developer** | `cluster-admin` when `developer_user_arn` is set | Scope to read-only or namespace-level access depending on role |
 | **ECR force_delete** | `false` (safe default, override with `-var='ecr_force_destroy=true'`) | Keep `false` in production; use `true` only for dev/test teardown |
-| **TLS** | Self-signed cert via Nginx Ingress fake cert | ACM certificate + Route53 DNS for a real domain |
+| **TLS** | cert-manager with self-signed ClusterIssuer (valid TLS, browser warning expected) | Replace `selfsigned-issuer` with a Let's Encrypt ClusterIssuer, use ACM certificate + Route53 DNS for a real domain |
 | **Bootstrap workflow** | Imperative installs (ArgoCD, CRDs, initial Helm deploy) | Expected — bootstrap is a one-time operation; all ongoing deploys are GitOps |
 
 ## Quick Start

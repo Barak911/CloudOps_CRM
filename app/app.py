@@ -221,7 +221,7 @@ def search_persons():
 def bulk_add_persons():
     """Add multiple persons in one request. Body: [{ person_id, name, ... }, ...]"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
         if not data or not isinstance(data, list):
             return jsonify({"error": "Request body must be a JSON array"}), 400
@@ -248,7 +248,7 @@ def bulk_add_persons():
 def bulk_delete_persons():
     """Delete multiple persons by custom IDs. Body: { "ids": ["id1", "id2"] }"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
         if not data or 'ids' not in data or not isinstance(data['ids'], list):
             return jsonify({"error": "Request body must contain 'ids' array"}), 400
@@ -271,7 +271,7 @@ def bulk_delete_persons():
 def add_person(person_id):
     """Add a new person with the given ID"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
         if not data:
             logger.warning("Add person failed: No data provided", extra={'correlation_id': getattr(request, 'correlation_id', 'unknown')})
@@ -326,7 +326,7 @@ def get_person_by_custom_id(person_id):
 def update_person(person_id):
     """Update an existing person by their custom person_id"""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True)
 
         if not data:
             return jsonify({"error": "No data provided"}), 400

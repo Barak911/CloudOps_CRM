@@ -19,7 +19,7 @@ kibana:
     kibana.yml: |
       server.basePath: "/kibana"
       server.rewriteBasePath: true
-      server.publicBaseUrl: "http://localhost/kibana"
+      server.publicBaseUrl: "https://crm.example.com/kibana"
 
   # Must match basePath for health checks to work
   healthCheckPath: "/kibana/app/kibana"

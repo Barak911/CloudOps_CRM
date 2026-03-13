@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - 'app/**'
+      - 'k8s/**'
+      - 'infra/**'
       - '.github/workflows/ci.yml'
 
 env:
@@ -13,7 +15,68 @@ env:
   ECR_REPOSITORY: crm-app
 
 jobs:
+  # Detect which parts of the repo changed
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      infra: ${{ steps.filter.outputs.infra }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'app/**'
+              - '.github/workflows/ci.yml'
+            infra:
+              - 'k8s/**'
+              - 'infra/**'
+
+  # Validate Terraform and Helm/K8s manifests
+  validate-infra:
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive infra/
+
+      - name: Terraform init (validate only)
+        run: |
+          cd infra
+          terraform init -backend=false
+
+      - name: Terraform validate
+        run: |
+          cd infra
+          terraform validate
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint Helm chart
+        run: helm lint k8s/crm-stack/
+
+      - name: Validate K8s manifests (dry-run)
+        run: |
+          # Basic YAML syntax validation for raw manifests
+          for f in k8s/manifests/*.yaml; do
+            echo "Validating $f..."
+            python3 -c "import yaml, sys; yaml.safe_load_all(open('$f'))" || exit 1
+          done
+          echo "All manifests are valid YAML"
+
+  # Build, test, scan, push Docker image (only when app/ changes)
   build-test-push:
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write

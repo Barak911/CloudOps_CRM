@@ -256,6 +256,36 @@ jobs:
             sleep 5
           done
 
+      - name: Install cert-manager
+        run: |
+          echo "Installing cert-manager for TLS certificate management..."
+          helm repo add jetstack https://charts.jetstack.io
+          helm repo update
+
+          helm upgrade --install cert-manager jetstack/cert-manager \
+            --namespace cert-manager \
+            --create-namespace \
+            --set crds.enabled=true \
+            --wait \
+            --timeout 3m
+
+          echo "cert-manager installed"
+
+          # Wait for cert-manager webhook to be ready
+          kubectl wait --for=condition=available deployment/cert-manager-webhook -n cert-manager --timeout=60s
+          echo "cert-manager webhook is ready"
+
+          # Create a self-signed ClusterIssuer (demo-appropriate — no real domain required)
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: selfsigned-issuer
+          spec:
+            selfSigned: {}
+          EOF
+          echo "Self-signed ClusterIssuer created"
+
       - name: Bootstrap Elasticsearch and Kibana Secrets
         run: |
           echo "Pre-creating Elasticsearch credentials and Kibana token..."

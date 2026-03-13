@@ -1,11 +1,9 @@
 # Ingress resource for CRM CloudOps application stack
 # Routes all services through a single AWS NLB
 #
-# TLS (production):
-#   1. Install cert-manager:  helm install cert-manager jetstack/cert-manager --set installCRDs=true
-#   2. Create a ClusterIssuer for Let's Encrypt
-#   3. Uncomment the tls: section and cert-manager annotation below
-#   4. Set ssl-redirect to "true"
+# TLS: cert-manager issues a self-signed certificate per ingress.
+# For production: replace selfsigned-issuer with a letsencrypt ClusterIssuer
+# and use a real domain instead of crm.example.com.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -13,7 +11,7 @@ metadata:
   namespace: default
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/cluster-issuer: "selfsigned-issuer"
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
@@ -45,7 +43,7 @@ metadata:
   namespace: default
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/cluster-issuer: "selfsigned-issuer"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
     nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
@@ -54,7 +52,7 @@ spec:
   tls:
     - hosts:
         - crm.example.com
-      secretName: crm-tls-cert
+      secretName: kibana-tls-cert
   rules:
     - host: crm.example.com
       http:
@@ -76,7 +74,7 @@ metadata:
   namespace: monitoring
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    cert-manager.io/cluster-issuer: "selfsigned-issuer"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
 spec:
@@ -84,7 +82,7 @@ spec:
   tls:
     - hosts:
         - crm.example.com
-      secretName: crm-tls-cert
+      secretName: grafana-tls-cert
   rules:
     - host: crm.example.com
       http:
