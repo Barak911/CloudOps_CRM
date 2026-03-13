@@ -23,9 +23,9 @@ variable "excluded_availability_zones" {
 }
 
 variable "ecr_force_destroy" {
-  description = "Allow terraform destroy to delete the ECR repo even when it contains images"
+  description = "Allow terraform destroy to delete the ECR repo even when it contains images (use -var='ecr_force_destroy=true' for teardown)"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "ecr_repository_name" {
@@ -47,10 +47,11 @@ variable "github_repo_name" {
 }
 
 variable "cluster_endpoint_public_access_cidrs" {
-  description = "CIDRs allowed to reach the EKS public endpoint (default: unrestricted for bootstrap, restrict after setup)"
+  description = "CIDRs allowed to reach the EKS public endpoint (default: open for initial bootstrap)"
   type        = list(string)
   default     = ["0.0.0.0/0"]
-  # After initial setup, set to your office/VPN CIDR in terraform.tfvars
+  # SECURITY: After bootstrap, restrict to your office/VPN CIDR in terraform.tfvars
+  # Example: ["203.0.113.0/24"] — your VPN egress range
 }
 
 variable "developer_user_arn" {

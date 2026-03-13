@@ -60,10 +60,10 @@ module "eks" {
   # Grant access to additional IAM principals
   access_entries = merge(
     {
-      # GitHub Actions role — cluster-admin is required because bootstrap-cluster.yml
-      # needs to: create namespaces, install CRDs (ArgoCD Application), Helm install
-      # across argocd/monitoring/ingress-nginx/default namespaces.
-      # For production, use separate IAM roles per workflow with tighter scoping.
+      # GitHub Actions role — cluster-admin is required for bootstrap (creating namespaces,
+      # installing CRDs, Helm installs across multiple namespaces).
+      # PRODUCTION NOTE: Split into a bootstrap role (cluster-admin) and a day-2 CI role
+      # scoped to ECR push + namespace-level edit for ongoing deployments.
       github_actions = {
         principal_arn = aws_iam_role.github_actions.arn
         type          = "STANDARD"

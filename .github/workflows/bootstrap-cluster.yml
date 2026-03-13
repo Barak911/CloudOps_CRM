@@ -234,10 +234,13 @@ jobs:
           kubectl wait --for=condition=Established crd/secretstores.external-secrets.io --timeout=60s
           echo "ExternalSecrets CRDs are ready"
 
-          # Apply the ExternalSecret manifests (ServiceAccount, SecretStore, ExternalSecret)
-          # This creates the mongodb-credentials K8s Secret from AWS Secrets Manager
-          kubectl apply -f k8s/manifests/external-secrets.yaml
-          echo "ExternalSecret manifests applied"
+          # Render the ExternalSecret template (substitutes AWS_ACCOUNT_ID, EKS_CLUSTER_NAME, AWS_REGION)
+          # and apply it. The template lives in k8s/manifests/external-secrets.yaml.
+          export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          envsubst '${AWS_ACCOUNT_ID} ${EKS_CLUSTER_NAME} ${AWS_REGION}' \
+            < k8s/manifests/external-secrets.yaml \
+            | kubectl apply -f -
+          echo "ExternalSecret manifests applied (account=$AWS_ACCOUNT_ID, cluster=$EKS_CLUSTER_NAME, region=$AWS_REGION)"
 
           # Wait for the ExternalSecret to sync (creates mongodb-credentials secret)
           echo "Waiting for mongodb-credentials secret to be created..."
