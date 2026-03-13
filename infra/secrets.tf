@@ -1,8 +1,9 @@
 # AWS Secrets Manager — stores credentials consumed by ExternalSecrets Operator in EKS
 
 resource "aws_secretsmanager_secret" "mongodb_credentials" {
-  name        = "${var.cluster_name}/mongodb-credentials"
-  description = "MongoDB root credentials for CRM stack"
+  name                    = "${var.cluster_name}/mongodb-credentials"
+  description             = "MongoDB root credentials for CRM stack"
+  recovery_window_in_days = 0 # immediate deletion for clean destroy/re-apply cycles
 
   tags = {
     project = "CloudOps_CRM"
