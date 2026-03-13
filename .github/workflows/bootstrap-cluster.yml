@@ -623,6 +623,7 @@ jobs:
           INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "url=$INGRESS_URL" >> $GITHUB_OUTPUT
           echo "CRM App URL (via Ingress): https://$INGRESS_URL"
+          echo "host_header=crm.example.com" >> $GITHUB_OUTPUT
 
       - name: Wait for DNS propagation
         run: |
@@ -643,7 +644,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Cleaning up test data from any previous bootstrap runs..."
           for user in test-user-1 test-user-2 test-user-delete; do
-            curl -s -X DELETE "$LB_URL/person/$user" >/dev/null 2>&1 || true
+            curl -s -L -k -H "Host: crm.example.com" -X DELETE "$LB_URL/person/$user" >/dev/null 2>&1 || true
           done
           echo "Test data cleanup complete"
 
@@ -652,7 +653,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: $LB_URL/"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" $LB_URL/)
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" $LB_URL/)
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
 
@@ -670,7 +671,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: $LB_URL/health"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" $LB_URL/health)
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" $LB_URL/health)
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
 
@@ -689,7 +690,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: POST $LB_URL/person/test-user-1"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" -X POST $LB_URL/person/test-user-1 \
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" -X POST $LB_URL/person/test-user-1 \
             -H "Content-Type: application/json" \
             -d '{"name":"Test User","email":"test@example.com","phone":"555-0001"}')
 
@@ -720,7 +721,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: GET $LB_URL/person"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" $LB_URL/person)
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" $LB_URL/person)
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
 
@@ -744,7 +745,7 @@ jobs:
           PERSON_ID="${{ steps.post-person.outputs.person_id }}"
           echo "Testing: GET $LB_URL/person?id=$PERSON_ID"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" "$LB_URL/person?id=$PERSON_ID")
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" "$LB_URL/person?id=$PERSON_ID")
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
 
@@ -768,12 +769,12 @@ jobs:
 
           # Add another user to test DB persistence
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
-          curl -s -L -k -X POST $LB_URL/person/test-user-2 \
+          curl -s -L -k -H "Host: crm.example.com" -X POST $LB_URL/person/test-user-2 \
             -H "Content-Type: application/json" \
             -d '{"name":"Second User","email":"second@example.com","phone":"555-0002"}'
 
           # Get all users
-          response=$(curl -s -L -k $LB_URL/person)
+          response=$(curl -s -L -k -H "Host: crm.example.com" $LB_URL/person)
 
           # Check if both users exist
           if ! echo "$response" | grep -q "test@example.com"; then
@@ -793,7 +794,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: GET $LB_URL/person/test-user-1"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" $LB_URL/person/test-user-1)
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" $LB_URL/person/test-user-1)
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
 
@@ -816,7 +817,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: PUT $LB_URL/person/test-user-1"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" -X PUT $LB_URL/person/test-user-1 \
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" -X PUT $LB_URL/person/test-user-1 \
             -H "Content-Type: application/json" \
             -d '{"name":"Updated Test User","email":"updated@example.com","phone":"555-9999"}')
 
@@ -837,7 +838,7 @@ jobs:
           fi
 
           # Verify the update
-          verify_response=$(curl -s -L -k $LB_URL/person/test-user-1)
+          verify_response=$(curl -s -L -k -H "Host: crm.example.com" $LB_URL/person/test-user-1)
           if ! echo "$verify_response" | grep -q "Updated Test User"; then
             echo "Update verification failed"
             exit 1
@@ -853,13 +854,13 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
 
           # First add a user to delete
-          curl -s -L -k -X POST $LB_URL/person/test-user-delete \
+          curl -s -L -k -H "Host: crm.example.com" -X POST $LB_URL/person/test-user-delete \
             -H "Content-Type: application/json" \
             -d '{"name":"Delete Me","email":"delete@example.com","phone":"555-0000"}'
 
           echo "Testing: DELETE $LB_URL/person/test-user-delete"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" -X DELETE $LB_URL/person/test-user-delete)
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" -X DELETE $LB_URL/person/test-user-delete)
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
 
@@ -877,7 +878,7 @@ jobs:
           fi
 
           # Verify deletion - should return 404
-          verify_response=$(curl -s -L -k -w "\n%{http_code}" $LB_URL/person/test-user-delete)
+          verify_response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" $LB_URL/person/test-user-delete)
           verify_code=$(echo "$verify_response" | tail -n1)
           if [ "$verify_code" != "404" ]; then
             echo "Delete verification failed - person still exists"
@@ -890,7 +891,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: GET $LB_URL/person/search?q=Updated"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" "$LB_URL/person/search?q=Updated")
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" "$LB_URL/person/search?q=Updated")
           http_code=$(echo "$response" | tail -n1)
 
           echo "HTTP Code: $http_code"
@@ -905,7 +906,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: GET $LB_URL/stats"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" $LB_URL/stats)
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" $LB_URL/stats)
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
 
@@ -928,7 +929,7 @@ jobs:
           LB_URL="http://${{ steps.get-lb.outputs.url }}"
           echo "Testing: GET $LB_URL/person?page=1&limit=5"
 
-          response=$(curl -s -L -k -w "\n%{http_code}" "$LB_URL/person?page=1&limit=5")
+          response=$(curl -s -L -k -H "Host: crm.example.com" -w "\n%{http_code}" "$LB_URL/person?page=1&limit=5")
           http_code=$(echo "$response" | tail -n1)
           body=$(echo "$response" | sed '$d')
 
@@ -1031,7 +1032,7 @@ jobs:
 
           # Test Kibana through Ingress (-L follows TLS redirect, -k accepts self-signed cert)
           for i in {1..10}; do
-            HTTP_CODE=$(curl -s -L -k -o /dev/null -w "%{http_code}" -u "elastic:$ES_PASSWORD" "http://$INGRESS_URL/kibana/api/status" 2>/dev/null || echo "000")
+            HTTP_CODE=$(curl -s -L -k -H "Host: crm.example.com" -o /dev/null -w "%{http_code}" -u "elastic:$ES_PASSWORD" "http://$INGRESS_URL/kibana/api/status" 2>/dev/null || echo "000")
             if [ "$HTTP_CODE" = "200" ]; then
               echo "Kibana is accessible and healthy via Ingress (HTTP 200)"
               break
@@ -1155,12 +1156,12 @@ jobs:
         run: |
           echo "Testing Grafana accessibility via Ingress..."
 
-          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "Grafana URL: https://$INGRESS_URL/grafana"
 
           # Test Grafana health through Ingress (-L follows TLS redirect, -k accepts self-signed cert)
           for i in {1..10}; do
-            HTTP_CODE=$(curl -s -L -k -o /dev/null -w "%{http_code}" "http://$INGRESS_URL/grafana/api/health" 2>/dev/null || echo "000")
+            HTTP_CODE=$(curl -s -L -k -H "Host: crm.example.com" -o /dev/null -w "%{http_code}" "http://$INGRESS_URL/grafana/api/health" 2>/dev/null || echo "000")
             if [ "$HTTP_CODE" = "200" ]; then
               echo "Grafana is accessible and healthy via Ingress"
               break
@@ -1179,12 +1180,12 @@ jobs:
         run: |
           echo "Testing ArgoCD accessibility via Ingress..."
 
-          INGRESS_URL=$(kubectl get service ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
           echo "ArgoCD URL: https://$INGRESS_URL/argocd"
 
           # Test ArgoCD through Ingress (-L follows TLS redirect, -k accepts self-signed cert)
           for i in {1..10}; do
-            HTTP_CODE=$(curl -s -L -k -o /dev/null -w "%{http_code}" "http://$INGRESS_URL/argocd" 2>/dev/null || echo "000")
+            HTTP_CODE=$(curl -s -L -k -H "Host: crm.example.com" -o /dev/null -w "%{http_code}" "http://$INGRESS_URL/argocd" 2>/dev/null || echo "000")
             if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ]; then
               echo "ArgoCD is accessible via Ingress (HTTP $HTTP_CODE)"
               break
