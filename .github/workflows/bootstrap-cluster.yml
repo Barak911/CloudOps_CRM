@@ -193,12 +193,15 @@ jobs:
           helm repo add argo https://argoproj.github.io/argo-helm
           helm repo update
 
+          # Clean up any stuck pre-upgrade hook jobs from previous runs
+          kubectl delete job -n argocd -l app.kubernetes.io/part-of=argocd --ignore-not-found 2>/dev/null || true
+
           helm upgrade --install argocd argo/argo-cd \
             --namespace argocd \
             --create-namespace \
             -f k8s/values/argocd-values.yaml \
             --wait \
-            --timeout 5m
+            --timeout 8m
 
           echo "ArgoCD installed successfully"
 
