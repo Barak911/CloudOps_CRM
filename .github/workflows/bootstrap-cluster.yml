@@ -214,6 +214,45 @@ jobs:
             echo "Removed stale nginx admission webhook" || \
             echo "No stale webhook found (clean cluster)"
 
+      - name: Install ExternalSecrets Operator
+        run: |
+          echo "Installing ExternalSecrets Operator..."
+          helm repo add external-secrets https://charts.external-secrets.io
+          helm repo update
+
+          helm upgrade --install external-secrets external-secrets/external-secrets \
+            --namespace external-secrets \
+            --create-namespace \
+            --set installCRDs=true \
+            --wait \
+            --timeout 3m
+
+          echo "ExternalSecrets Operator installed"
+
+          # Wait for CRDs to be available
+          kubectl wait --for=condition=Established crd/externalsecrets.external-secrets.io --timeout=60s
+          kubectl wait --for=condition=Established crd/secretstores.external-secrets.io --timeout=60s
+          echo "ExternalSecrets CRDs are ready"
+
+          # Apply the ExternalSecret manifests (ServiceAccount, SecretStore, ExternalSecret)
+          # This creates the mongodb-credentials K8s Secret from AWS Secrets Manager
+          kubectl apply -f k8s/manifests/external-secrets.yaml
+          echo "ExternalSecret manifests applied"
+
+          # Wait for the ExternalSecret to sync (creates mongodb-credentials secret)
+          echo "Waiting for mongodb-credentials secret to be created..."
+          for i in {1..30}; do
+            if kubectl get secret mongodb-credentials -n default &>/dev/null; then
+              echo "mongodb-credentials secret created successfully"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "WARNING: mongodb-credentials secret not yet created — checking ExternalSecret status"
+              kubectl get externalsecret mongodb-credentials -n default -o yaml 2>/dev/null | tail -20
+            fi
+            sleep 5
+          done
+
       - name: Bootstrap Elasticsearch and Kibana Secrets
         run: |
           echo "Pre-creating Elasticsearch credentials and Kibana token..."
