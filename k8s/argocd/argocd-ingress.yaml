@@ -14,12 +14,9 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts:
-        - crm.example.com
-      secretName: argocd-tls-cert
+    - secretName: argocd-tls-cert
   rules:
-    - host: crm.example.com
-      http:
+    - http:
         paths:
           - path: /argocd
             pathType: Prefix

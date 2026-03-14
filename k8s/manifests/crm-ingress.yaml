@@ -18,12 +18,9 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts:
-        - crm.example.com
-      secretName: crm-tls-cert
+    - secretName: crm-tls-cert
   rules:
-    - host: crm.example.com
-      http:
+    - http:
         paths:
           # CRM Application - root path
           - path: /
@@ -50,12 +47,9 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts:
-        - crm.example.com
-      secretName: kibana-tls-cert
+    - secretName: kibana-tls-cert
   rules:
-    - host: crm.example.com
-      http:
+    - http:
         paths:
           - path: /kibana
             pathType: Prefix
@@ -80,12 +74,9 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts:
-        - crm.example.com
-      secretName: grafana-tls-cert
+    - secretName: grafana-tls-cert
   rules:
-    - host: crm.example.com
-      http:
+    - http:
         paths:
           - path: /grafana
             pathType: Prefix
