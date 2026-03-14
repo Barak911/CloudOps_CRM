@@ -237,6 +237,9 @@ jobs:
           kubectl wait --for=condition=Established crd/secretstores.external-secrets.io --timeout=60s
           echo "ExternalSecrets CRDs are ready"
 
+          # Create the crm namespace before applying ExternalSecrets resources
+          kubectl create namespace crm 2>/dev/null || true
+
           # Render the ExternalSecret template (substitutes AWS_ACCOUNT_ID, EKS_CLUSTER_NAME, AWS_REGION)
           # and apply it. The template lives in k8s/manifests/external-secrets.yaml.
           export AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
