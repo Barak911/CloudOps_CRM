@@ -20,8 +20,8 @@ crm-app:
   replicaCount: 2
 
   image:
-    repository: REPLACE_WITH_ECR_URL/crm-app
-    tag: "v1.0.0-8ec792d"
+    repository: 253490775265.dkr.ecr.us-east-1.amazonaws.com/crm-app
+    tag: "v1.0.0-c234466"
     pullPolicy: Always
 
   service:
