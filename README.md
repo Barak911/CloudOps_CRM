@@ -1,6 +1,6 @@
 # CloudOps CRM
 
-**Production-grade Kubernetes platform** on AWS EKS — GitOps delivery with ArgoCD, full observability stack (Prometheus + Grafana + EFK), and automated CI/CD pipelines.
+**Kubernetes platform built with production patterns** on AWS EKS — GitOps delivery with ArgoCD, full observability stack (Prometheus + Grafana + EFK), and automated CI/CD pipelines.
 
 Built as a monorepo: application code, Helm charts, Terraform infrastructure, and CI/CD workflows all in one place.
 
@@ -136,7 +136,7 @@ CloudOps_CRM/
 
 ## Known Limitations & Production Hardening
 
-This project is a fully working demo. For production use, consider the following:
+This project demonstrates production-ready patterns in a working deployment. For actual production use, apply the following hardening steps:
 
 | Area | Current State | Production Recommendation |
 |------|--------------|--------------------------|
@@ -192,7 +192,8 @@ pytest test_app.py -v         # 18 unit tests
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check |
+| GET | `/health` | Liveness check (process alive) |
+| GET | `/ready` | Readiness check (DB connectivity) |
 | GET | `/person` | List all (supports `?page=&limit=`) |
 | GET | `/person/<id>` | Get by custom ID |
 | GET | `/person/search?q=<term>` | Search by name or email |
