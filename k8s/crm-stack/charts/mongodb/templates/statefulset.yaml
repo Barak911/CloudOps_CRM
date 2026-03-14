@@ -48,6 +48,18 @@ spec:
             secretKeyRef:
               name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
               key: password
+        - name: MONGO_APP_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-app-credentials
+              key: username
+              optional: true
+        - name: MONGO_APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mongodb-app-credentials
+              key: password
+              optional: true
         {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
@@ -55,6 +67,11 @@ spec:
         volumeMounts:
         - name: {{ include "mongodb.fullname" . }}-data
           mountPath: /data/db
+        {{- if .Values.auth.enabled }}
+        - name: initdb-scripts
+          mountPath: /docker-entrypoint-initdb.d
+          readOnly: true
+        {{- end }}
         {{- end }}
         {{- if .Values.healthCheck.enabled }}
         livenessProbe:
@@ -77,6 +94,12 @@ spec:
           periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
           timeoutSeconds: {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
         {{- end }}
+      {{- if .Values.auth.enabled }}
+      volumes:
+      - name: initdb-scripts
+        configMap:
+          name: {{ include "mongodb.fullname" . }}-initdb
+      {{- end }}
   {{- if .Values.persistence.enabled }}
   volumeClaimTemplates:
   - metadata:

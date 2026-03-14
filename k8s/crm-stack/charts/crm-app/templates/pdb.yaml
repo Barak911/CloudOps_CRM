@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "crm-app.fullname" . }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "crm-app.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "crm-app.selectorLabels" . | nindent 6 }}

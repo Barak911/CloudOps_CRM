@@ -1,6 +1,6 @@
 # Global values shared across all subcharts
 global:
-  namespace: default
+  namespace: crm
   environment: production
 
   # Common labels applied to all resources
@@ -17,10 +17,10 @@ global:
 # CRM Application configuration
 crm-app:
   enabled: true
-  replicaCount: 1
+  replicaCount: 2
 
   image:
-    repository: 253490775265.dkr.ecr.us-east-1.amazonaws.com/crm-app
+    repository: REPLACE_WITH_ECR_URL/crm-app
     tag: "v1.0.0-8ec792d"
     pullPolicy: Always
 
@@ -241,7 +241,7 @@ fluentd:
   # The official daemonset image uses these to generate ES7-safe config
   env:
     - name: FLUENT_ELASTICSEARCH_HOST
-      value: "elasticsearch-master.default.svc"
+      value: "elasticsearch-master.crm.svc"
     - name: FLUENT_ELASTICSEARCH_PORT
       value: "9200"
     - name: FLUENT_ELASTICSEARCH_SCHEME

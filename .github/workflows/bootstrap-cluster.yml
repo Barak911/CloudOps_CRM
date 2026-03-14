@@ -248,13 +248,27 @@ jobs:
           # Wait for the ExternalSecret to sync (creates mongodb-credentials secret)
           echo "Waiting for mongodb-credentials secret to be created..."
           for i in {1..30}; do
-            if kubectl get secret mongodb-credentials -n default &>/dev/null; then
+            if kubectl get secret mongodb-credentials -n crm &>/dev/null; then
               echo "mongodb-credentials secret created successfully"
               break
             fi
             if [ "$i" -eq 30 ]; then
               echo "WARNING: mongodb-credentials secret not yet created — checking ExternalSecret status"
-              kubectl get externalsecret mongodb-credentials -n default -o yaml 2>/dev/null | tail -20
+              kubectl get externalsecret mongodb-credentials -n crm -o yaml 2>/dev/null | tail -20
+            fi
+            sleep 5
+          done
+
+          # Also wait for app-scoped credentials
+          echo "Waiting for mongodb-app-credentials secret..."
+          for i in {1..30}; do
+            if kubectl get secret mongodb-app-credentials -n crm &>/dev/null; then
+              echo "mongodb-app-credentials secret created successfully"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "WARNING: mongodb-app-credentials secret not yet created"
+              kubectl get externalsecret mongodb-app-credentials -n crm -o yaml 2>/dev/null | tail -20
             fi
             sleep 5
           done
@@ -296,25 +310,25 @@ jobs:
           echo "but ArgoCD maps it to PreSync which blocks ES deployment."
 
           # Reuse existing ES password or generate a new one (prevents auth mismatch on re-deploy)
-          EXISTING_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)
+          EXISTING_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n crm -o jsonpath='{.data.password}' 2>/dev/null | base64 -d)
           if [ -n "$EXISTING_PASSWORD" ]; then
             ES_PASSWORD="$EXISTING_PASSWORD"
             echo "Reusing existing Elasticsearch password from credentials secret"
           else
             ES_PASSWORD=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9' | head -c 16)
-            kubectl create namespace default 2>/dev/null || true
+            kubectl create namespace crm 2>/dev/null || true
             kubectl create secret generic elasticsearch-master-credentials \
               --from-literal=username=elastic \
               --from-literal=password="$ES_PASSWORD" \
-              -n default --dry-run=client -o yaml | kubectl apply -f -
+              -n crm --dry-run=client -o yaml | kubectl apply -f -
           fi
 
           # Label the secret so Helm can adopt it (without these, helm upgrade fails)
           kubectl label secret elasticsearch-master-credentials \
-            app.kubernetes.io/managed-by=Helm -n default --overwrite
+            app.kubernetes.io/managed-by=Helm -n crm --overwrite
           kubectl annotate secret elasticsearch-master-credentials \
             meta.helm.sh/release-name=crm-stack \
-            meta.helm.sh/release-namespace=default -n default --overwrite
+            meta.helm.sh/release-namespace=crm -n crm --overwrite
           echo "Elasticsearch credentials secret created (with Helm ownership labels)"
 
           # Apply Nginx Ingress first so ArgoCD can start deploying ES
@@ -327,23 +341,24 @@ jobs:
             -f k8s/crm-stack/values.yaml \
             -f k8s/values/values-ingress.yaml \
             --set elasticsearch.secret.password="$ES_PASSWORD" \
+            --namespace crm --create-namespace \
             --no-hooks \
             --timeout 10m
 
           # Wait for Elasticsearch to be ready
           echo "Waiting for Elasticsearch..."
-          kubectl wait --for=condition=ready pod/elasticsearch-master-0 -n default --timeout=300s
+          kubectl wait --for=condition=ready pod/elasticsearch-master-0 -n crm --timeout=300s
 
           # Create Kibana ES service account token via ES API
           echo "Creating Kibana service account token..."
 
           # Delete existing token first (idempotent re-deploy)
-          kubectl exec elasticsearch-master-0 -n default -- curl -s -k \
+          kubectl exec elasticsearch-master-0 -n crm -- curl -s -k \
             -u "elastic:${ES_PASSWORD}" \
             -X DELETE "https://localhost:9200/_security/service/elastic/kibana/credential/token/crm-stack-kibana" \
             2>/dev/null || true
 
-          TOKEN=$(kubectl exec elasticsearch-master-0 -n default -- curl -s -k \
+          TOKEN=$(kubectl exec elasticsearch-master-0 -n crm -- curl -s -k \
             -u "elastic:${ES_PASSWORD}" \
             -X POST "https://localhost:9200/_security/service/elastic/kibana/credential/token/crm-stack-kibana" \
             2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['token']['value'])" 2>/dev/null) || true
@@ -351,12 +366,12 @@ jobs:
           if [ -n "$TOKEN" ]; then
             kubectl create secret generic crm-stack-kibana-es-token \
               --from-literal=token="$TOKEN" \
-              -n default --dry-run=client -o yaml | kubectl apply -f -
+              -n crm --dry-run=client -o yaml | kubectl apply -f -
             echo "Kibana ES token secret created"
 
             # Restart Kibana to pick up the new token (idempotent — handles re-deploy case
             # where Kibana is running with a stale token from a previous bootstrap)
-            kubectl rollout restart deployment crm-stack-kibana -n default 2>/dev/null || true
+            kubectl rollout restart deployment crm-stack-kibana -n crm 2>/dev/null || true
           else
             echo "WARNING: Could not create Kibana token — Kibana may need manual intervention"
           fi
@@ -451,7 +466,7 @@ jobs:
             if [ "$i" -eq 45 ]; then
               echo "ERROR: CRM Stack did not become healthy within timeout"
               kubectl get application crm-stack -n argocd -o yaml 2>/dev/null | tail -30
-              kubectl get pods -n default
+              kubectl get pods -n crm
               exit 1
             fi
             sleep 20
@@ -532,13 +547,13 @@ jobs:
 
           # Wait for Elasticsearch to be ready
           echo "Waiting for Elasticsearch pod..."
-          kubectl wait --for=condition=ready pod/elasticsearch-master-0 -n default --timeout=300s || true
+          kubectl wait --for=condition=ready pod/elasticsearch-master-0 -n crm --timeout=300s || true
 
           # Get ES password
-          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
+          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n crm -o jsonpath='{.data.password}' | base64 -d)
 
           # Create index template for logs-* indices (prevents mapping conflicts)
-          kubectl exec elasticsearch-master-0 -n default -- curl -k -s \
+          kubectl exec elasticsearch-master-0 -n crm -- curl -k -s \
             -u "elastic:${ES_PASSWORD}" \
             -X PUT "https://localhost:9200/_index_template/logs-template" \
             -H 'Content-Type: application/json' \
@@ -572,7 +587,7 @@ jobs:
           echo "Index template created"
 
           # Create ingest pipeline for JSON parsing
-          kubectl exec elasticsearch-master-0 -n default -- curl -k -s \
+          kubectl exec elasticsearch-master-0 -n crm -- curl -k -s \
             -u "elastic:${ES_PASSWORD}" \
             -X PUT "https://localhost:9200/_ingest/pipeline/logs-generic" \
             -H 'Content-Type: application/json' \
@@ -608,11 +623,11 @@ jobs:
           echo "=== Helm Releases (managed by ArgoCD) ==="
           helm list -A
           echo ""
-          echo "=== All Resources in default namespace ==="
-          kubectl get all -n default -o wide
+          echo "=== All Resources in crm namespace ==="
+          kubectl get all -n crm -o wide
           echo ""
           echo "=== Persistent Volume Claims ==="
-          kubectl get pvc -n default
+          kubectl get pvc -n crm
           echo ""
           echo "=== Services ==="
           kubectl get services -A
@@ -626,7 +641,7 @@ jobs:
           kubectl top nodes 2>/dev/null || echo "Metrics server not available"
           echo ""
           echo "=== Pod Resource Usage ==="
-          kubectl top pods -n default 2>/dev/null || echo "Metrics server not available"
+          kubectl top pods -n crm 2>/dev/null || echo "Metrics server not available"
           echo ""
           kubectl describe nodes | grep -A 5 "Allocated resources"
 
@@ -1007,12 +1022,12 @@ jobs:
           echo "Testing Elasticsearch cluster health..."
 
           # Port-forward to Elasticsearch
-          kubectl port-forward svc/elasticsearch-master 9200:9200 -n default &
+          kubectl port-forward svc/elasticsearch-master 9200:9200 -n crm &
           PF_PID=$!
           sleep 10
 
           # Get credentials
-          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
+          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n crm -o jsonpath='{.data.password}' | base64 -d)
 
           # Test cluster health
           HEALTH=$(curl -s -u "elastic:$ES_PASSWORD" -k https://localhost:9200/_cluster/health | jq -r '.status')
@@ -1031,11 +1046,11 @@ jobs:
         run: |
           echo "Testing Elasticsearch index operations..."
 
-          kubectl port-forward svc/elasticsearch-master 9200:9200 -n default &
+          kubectl port-forward svc/elasticsearch-master 9200:9200 -n crm &
           PF_PID=$!
           sleep 10
 
-          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
+          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n crm -o jsonpath='{.data.password}' | base64 -d)
 
           # List indices
           INDICES=$(curl -s -u "elastic:$ES_PASSWORD" -k https://localhost:9200/_cat/indices?v)
@@ -1062,7 +1077,7 @@ jobs:
 
           # Get Ingress URL
           INGRESS_URL=$(kubectl get service nginx-ingress-ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n default -o jsonpath='{.data.password}' | base64 -d)
+          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials -n crm -o jsonpath='{.data.password}' | base64 -d)
 
           echo "Kibana URL: https://$INGRESS_URL/kibana"
 
@@ -1091,7 +1106,7 @@ jobs:
           echo "Testing Fluentd DaemonSet..."
 
           # Check Fluentd pods
-          FLUENTD_PODS=$(kubectl get pods -l app.kubernetes.io/name=fluentd -n default -o jsonpath='{.items[*].metadata.name}')
+          FLUENTD_PODS=$(kubectl get pods -l app.kubernetes.io/name=fluentd -n crm -o jsonpath='{.items[*].metadata.name}')
           if [ -z "$FLUENTD_PODS" ]; then
             echo "No Fluentd pods found"
             exit 1
@@ -1102,7 +1117,7 @@ jobs:
           # Check Fluentd is collecting logs
           for pod in $FLUENTD_PODS; do
             echo "Checking $pod..."
-            LOG_COUNT=$(kubectl logs $pod -n default --tail=100 | wc -l)
+            LOG_COUNT=$(kubectl logs $pod -n crm --tail=100 | wc -l)
             if [ "$LOG_COUNT" -gt 0 ]; then
               echo "$pod is collecting logs ($LOG_COUNT lines)"
             else
@@ -1116,9 +1131,9 @@ jobs:
 
           # Generate test logs from CRM app
           echo "Generating test logs from CRM app..."
-          CRM_PODS=$(kubectl get pods -l app=crm-app -n default -o jsonpath='{.items[*].metadata.name}')
+          CRM_PODS=$(kubectl get pods -l app=crm-app -n crm -o jsonpath='{.items[*].metadata.name}')
           for pod in $CRM_PODS; do
-            kubectl logs $pod -n default --tail=5
+            kubectl logs $pod -n crm --tail=5
           done
 
           echo "Log pipeline verification complete"
@@ -1289,10 +1304,10 @@ jobs:
 
           # Collect command outputs for code blocks
           HELM_RELEASES=$(helm list -A 2>/dev/null || echo "No Helm releases found")
-          DEPLOYMENT_STATUS=$(kubectl get all -n default -o wide 2>/dev/null || echo "No resources found")
+          DEPLOYMENT_STATUS=$(kubectl get all -n crm -o wide 2>/dev/null || echo "No resources found")
           INGRESS_STATUS=$(kubectl get ingress -A 2>/dev/null || echo "No ingress resources found")
           NODE_USAGE=$(kubectl top nodes 2>/dev/null || echo "Metrics server not available")
-          POD_USAGE=$(kubectl top pods -n default 2>/dev/null || echo "Metrics server not available")
+          POD_USAGE=$(kubectl top pods -n crm 2>/dev/null || echo "Metrics server not available")
 
           # Build the report — written to both stdout (logs) and GitHub Step Summary
           {
@@ -1319,7 +1334,7 @@ jobs:
             echo "| Cluster | \`${{ env.EKS_CLUSTER_NAME }}\` |"
             echo "| Region | \`${{ env.AWS_REGION }}\` |"
             echo "| Deployment Method | ArgoCD GitOps |"
-            echo "| App Namespace | \`default\` |"
+            echo "| App Namespace | \`crm\` |"
             echo "| Monitoring Namespace | \`monitoring\` |"
             echo ""
             echo "## ArgoCD Application Status"
@@ -1339,12 +1354,12 @@ jobs:
             echo "| Grafana (Monitoring) | https://$INGRESS_URL/grafana |"
             echo "| ArgoCD Dashboard | https://$INGRESS_URL/argocd |"
             echo "| Prometheus | \`prometheus-stack-kube-prom-prometheus.monitoring.svc:9090\` (internal) |"
-            echo "| Elasticsearch | \`elasticsearch-master.default.svc:9200\` (internal) |"
+            echo "| Elasticsearch | \`elasticsearch-master.crm.svc:9200\` (internal) |"
             echo ""
             echo "## Credentials"
             echo "| Service | Username | Password |"
             echo "|---------|----------|----------|"
-            echo "| Elasticsearch | \`elastic\` | \`kubectl get secret elasticsearch-master-credentials -o jsonpath='{.data.password}' \\| base64 -d\` |"
+            echo "| Elasticsearch | \`elastic\` | \`kubectl get secret elasticsearch-master-credentials -n crm -o jsonpath='{.data.password}' \\| base64 -d\` |"
             echo "| Kibana | \`elastic\` | Same as Elasticsearch |"
             echo "| Grafana | \`admin\` | Set during deployment |"
             echo "| ArgoCD | \`admin\` | \`kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' \\| base64 -d\` |"

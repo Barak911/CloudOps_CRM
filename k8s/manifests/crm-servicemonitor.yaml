@@ -2,7 +2,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: crm-app-metrics
-  namespace: default
+  namespace: crm
   labels:
     app: crm-app
     # Label for Prometheus Operator to discover this ServiceMonitor
@@ -17,7 +17,7 @@ spec:
   # Explicitly set namespace selector for cross-namespace discovery
   namespaceSelector:
     matchNames:
-      - default
+      - crm
   endpoints:
     - port: http
       path: /metrics

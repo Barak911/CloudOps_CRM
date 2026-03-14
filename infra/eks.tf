@@ -1,9 +1,13 @@
-data "aws_vpc" "default" { default = true }
+data "aws_vpc" "default" {
+  count   = var.use_custom_vpc ? 0 : 1
+  default = true
+}
 
 # Dynamically discover AZs that support EKS (works in any region)
 # Some AZs (e.g. us-east-1e) don't support EKS control planes —
 # set var.excluded_availability_zones to skip them
 data "aws_availability_zones" "available" {
+  count = var.use_custom_vpc ? 0 : 1
   state = "available"
   filter {
     name   = "opt-in-status"
@@ -13,14 +17,16 @@ data "aws_availability_zones" "available" {
 }
 
 data "aws_subnets" "default" {
+  count = var.use_custom_vpc ? 0 : 1
+
   filter {
     name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
+    values = [data.aws_vpc.default[0].id]
   }
 
   filter {
     name   = "availability-zone"
-    values = data.aws_availability_zones.available.names
+    values = data.aws_availability_zones.available[0].names
   }
 }
 
@@ -34,8 +40,8 @@ module "eks" {
   # Use self-managed addons bootstrapped on nodes (simpler, avoids dependency issues)
   bootstrap_self_managed_addons = true
 
-  vpc_id     = data.aws_vpc.default.id
-  subnet_ids = data.aws_subnets.default.ids
+  vpc_id     = var.use_custom_vpc ? module.vpc[0].vpc_id : data.aws_vpc.default[0].id
+  subnet_ids = var.use_custom_vpc ? module.vpc[0].private_subnets : data.aws_subnets.default[0].ids
 
   # expose API publicly so kubectl works outside VPC (restrict CIDRs in terraform.tfvars)
   cluster_endpoint_public_access       = true
@@ -60,10 +66,12 @@ module "eks" {
   # Grant access to additional IAM principals
   access_entries = merge(
     {
-      # GitHub Actions role — cluster-admin is required for bootstrap (creating namespaces,
-      # installing CRDs, Helm installs across multiple namespaces).
-      # PRODUCTION NOTE: Split into a bootstrap role (cluster-admin) and a day-2 CI role
-      # scoped to ECR push + namespace-level edit for ongoing deployments.
+      # GitHub Actions role — cluster-admin is required during bootstrap to create
+      # namespaces, install CRDs (e.g. ArgoCD, ExternalSecrets), and run Helm
+      # installs across multiple namespaces.  Day-2 CI does NOT need cluster
+      # access because ArgoCD handles all in-cluster deployment via GitOps.
+      # PRODUCTION NOTE: Create a separate day-2 CI role scoped only to ECR push
+      # and remove this cluster-admin grant once bootstrap is complete.
       github_actions = {
         principal_arn = aws_iam_role.github_actions.arn
         type          = "STANDARD"
@@ -83,10 +91,17 @@ module "eks" {
         principal_arn = var.developer_user_arn
         type          = "STANDARD"
         policy_associations = {
-          admin = {
-            policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          view = {
+            policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
             access_scope = {
               type = "cluster"
+            }
+          }
+          edit = {
+            policy_arn = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+            access_scope = {
+              type       = "namespace"
+              namespaces = ["crm", "monitoring", "argocd"]
             }
           }
         }

@@ -18,7 +18,7 @@ Built as a monorepo: application code, Helm charts, Terraform infrastructure, an
 | **Logging** | Fluentd (DaemonSet) -> Elasticsearch -> Kibana |
 | **Networking** | Nginx Ingress Controller, single AWS NLB for all services |
 | **Secrets** | AWS Secrets Manager + ExternalSecrets Operator (IRSA) |
-| **Security** | Pod security contexts, read-only root FS, Trivy + pip-audit scans, OIDC (no stored keys) |
+| **Security** | Pod security contexts, read-only root FS, Trivy + pip-audit scans, OIDC (no stored keys), app-scoped DB credentials |
 
 ## Architecture
 
@@ -127,8 +127,8 @@ CloudOps_CRM/
 | **ArgoCD over Helm-in-CI** | After bootstrap, cluster state is always in Git. Drift detection + self-healing. No `kubectl` in day-2 pipelines. |
 | **Multi-source ArgoCD Apps** | Helm chart from one source, values from another — clean separation of config vs charts |
 | **OIDC federation** | GitHub Actions authenticates to AWS via short-lived tokens. Zero stored secrets. |
-| **ExternalSecrets** | MongoDB credentials stored in AWS Secrets Manager, synced to K8s via IRSA — no secrets in Git or CLI args |
-| **Least-privilege CI** | GitHub Actions uses OIDC federation (no stored keys). Bootstrap requires cluster-admin for CRD/namespace creation; a production refinement would use separate roles for bootstrap vs day-2 CI. |
+| **ExternalSecrets** | MongoDB root + app credentials stored in AWS Secrets Manager, synced to K8s via IRSA — no secrets in Git or CLI args |
+| **Least-privilege CI** | GitHub Actions uses OIDC federation (no stored keys). Bootstrap requires cluster-admin for CRD/namespace creation; day-2 CI only pushes to ECR — ArgoCD handles all cluster operations. Developer access is scoped to view + namespace-level edit. |
 | **Helm umbrella chart** | CRM app + MongoDB + EFK deployed as a single unit with shared config (namespace, labels) |
 | **Immutable ECR tags** | Every image tagged with commit SHA — no `latest` in production, full traceability |
 | **Pod security contexts** | `readOnlyRootFilesystem`, `runAsNonRoot`, `drop: ALL` capabilities — defense in depth |
@@ -141,9 +141,9 @@ This project is a fully working demo. For production use, consider the following
 | Area | Current State | Production Recommendation |
 |------|--------------|--------------------------|
 | **EKS API endpoint** | Public (`0.0.0.0/0`) — easy bootstrap from anywhere | Restrict `cluster_endpoint_public_access_cidrs` to VPN/office CIDRs in `terraform.tfvars`, or disable public access entirely |
-| **VPC** | Default VPC with public subnets | Dedicated VPC with private subnets + NAT gateway for node groups |
-| **IAM — CI role** | `cluster-admin` for both bootstrap and day-2 CI | Separate bootstrap role (cluster-admin) from day-2 CI role (ECR push + namespace edit) |
-| **IAM — developer** | `cluster-admin` when `developer_user_arn` is set | Scope to read-only or namespace-level access depending on role |
+| **VPC** | Default VPC (set `use_custom_vpc=true` for dedicated VPC with private subnets + NAT) | Enable custom VPC in `terraform.tfvars` for production |
+| **IAM — CI role** | `cluster-admin` for bootstrap (day-2 CI only pushes to ECR; ArgoCD handles deploy) | Already least-privilege for day-2 — bootstrap role could be revoked post-setup |
+| **IAM — developer** | View (cluster) + Edit (crm, monitoring, argocd namespaces) | Already scoped — elevate to admin only if needed |
 | **ECR force_delete** | `false` (safe default, override with `-var='ecr_force_destroy=true'`) | Keep `false` in production; use `true` only for dev/test teardown |
 | **TLS** | cert-manager with self-signed ClusterIssuer (valid TLS, browser warning expected) | Replace `selfsigned-issuer` with a Let's Encrypt ClusterIssuer, use ACM certificate + Route53 DNS for a real domain |
 | **Bootstrap workflow** | Imperative installs (ArgoCD, CRDs, initial Helm deploy) | Expected — bootstrap is a one-time operation; all ongoing deploys are GitOps |

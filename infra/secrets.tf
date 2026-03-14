@@ -2,7 +2,7 @@
 
 resource "aws_secretsmanager_secret" "mongodb_credentials" {
   name                    = "${var.cluster_name}/mongodb-credentials"
-  description             = "MongoDB root credentials for CRM stack"
+  description             = "MongoDB root and application credentials for CRM stack"
   recovery_window_in_days = 0 # immediate deletion for clean destroy/re-apply cycles
 
   tags = {
@@ -18,11 +18,18 @@ resource "random_password" "mongodb_root" {
   special = false
 }
 
+resource "random_password" "mongodb_app" {
+  length  = 24
+  special = false
+}
+
 resource "aws_secretsmanager_secret_version" "mongodb_credentials" {
   secret_id = aws_secretsmanager_secret.mongodb_credentials.id
   secret_string = jsonencode({
-    username = "admin"
-    password = random_password.mongodb_root.result
+    username     = "admin"
+    password     = random_password.mongodb_root.result
+    app_username = "crm_app"
+    app_password = random_password.mongodb_app.result
   })
 
   lifecycle {
@@ -65,7 +72,7 @@ resource "aws_iam_role" "external_secrets" {
         Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
-            "${module.eks.oidc_provider}:sub" = "system:serviceaccount:default:external-secrets-sa"
+            "${module.eks.oidc_provider}:sub" = "system:serviceaccount:${var.app_namespace}:external-secrets-sa"
             "${module.eks.oidc_provider}:aud" = "sts.amazonaws.com"
           }
         }

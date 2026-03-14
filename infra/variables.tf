@@ -60,3 +60,21 @@ variable "developer_user_arn" {
   default     = ""
   # Set via terraform.tfvars — do not commit real ARNs
 }
+
+variable "use_custom_vpc" {
+  description = "Create a dedicated VPC with private subnets and NAT gateway instead of using the default VPC"
+  type        = bool
+  default     = false
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for the custom VPC (only used when use_custom_vpc = true)"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+
+variable "app_namespace" {
+  description = "Kubernetes namespace for the CRM application stack"
+  type        = string
+  default     = "crm"
+}

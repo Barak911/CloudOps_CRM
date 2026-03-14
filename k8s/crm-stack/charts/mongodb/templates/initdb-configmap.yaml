@@ -1,0 +1,35 @@
+{{- if .Values.auth.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mongodb.fullname" . }}-initdb
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+data:
+  create-app-user.js: |
+    // Create application-scoped user with readWrite on crm_db only
+    // This runs on first MongoDB start (when /data/db is empty)
+    // Root credentials come from MONGO_INITDB_ROOT_USERNAME/PASSWORD env vars
+
+    var appUser = process.env.MONGO_APP_USERNAME || 'crm_app';
+    var appPass = process.env.MONGO_APP_PASSWORD;
+
+    if (!appPass) {
+      print('WARN: MONGO_APP_PASSWORD not set — skipping app user creation');
+    } else {
+      var targetDb = db.getSiblingDB('{{ .Values.global.mongodb.database }}');
+
+      // Drop existing user to make script idempotent
+      try { targetDb.dropUser(appUser); } catch(e) { /* user may not exist */ }
+
+      targetDb.createUser({
+        user: appUser,
+        pwd: appPass,
+        roles: [
+          { role: 'readWrite', db: '{{ .Values.global.mongodb.database }}' }
+        ]
+      });
+      print('Created app user: ' + appUser + ' with readWrite on {{ .Values.global.mongodb.database }}');
+    }
+{{- end }}

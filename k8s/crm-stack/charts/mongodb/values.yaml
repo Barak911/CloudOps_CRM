@@ -49,5 +49,5 @@ auth:
   database: crm_db
 
 global:
-  namespace: default
+  namespace: crm
   environment: production

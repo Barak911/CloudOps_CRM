@@ -6,7 +6,9 @@ metadata:
   labels:
     {{- include "crm-app.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
+  {{- end }}
   revisionHistoryLimit: 3
   selector:
     matchLabels:
@@ -43,15 +45,15 @@ spec:
         - name: MONGO_USERNAME
           valueFrom:
             secretKeyRef:
-              name: mongodb-credentials
+              name: mongodb-app-credentials
               key: username
         - name: MONGO_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: mongodb-credentials
+              name: mongodb-app-credentials
               key: password
         - name: MONGO_URI
-          value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ .Values.global.mongodb.host }}.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.mongodb.port }}/{{ .Values.global.mongodb.database }}?authSource=admin"
+          value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ .Values.global.mongodb.host }}.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.mongodb.port }}/{{ .Values.global.mongodb.database }}?authSource={{ .Values.global.mongodb.database }}"
         - name: PORT
           value: "{{ .Values.service.targetPort }}"
         - name: ENVIRONMENT
