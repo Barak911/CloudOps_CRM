@@ -61,7 +61,8 @@ Terraform creates EKS Access Entries for:
 1. **Developer user** -- from `developer_user_arn` variable
 2. **GitHub Actions role** -- created automatically in `github-oidc.tf`
 
-Both receive `AmazonEKSClusterAdminPolicy`.
+- **Developer user** receives `AmazonEKSViewPolicy` cluster-wide and `AmazonEKSEditPolicy` scoped to the `crm`, `monitoring`, and `argocd` namespaces
+- **GitHub Actions role** receives `AmazonEKSClusterAdminPolicy` for bootstrap operations; day-2 delivery is handled through ArgoCD and ECR push permissions
 
 ## GitHub Actions Setup
 

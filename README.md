@@ -1,8 +1,16 @@
 # CloudOps CRM
 
-**Kubernetes platform built with production patterns** on AWS EKS — GitOps delivery with ArgoCD, full observability stack (Prometheus + Grafana + EFK), and automated CI/CD pipelines.
+**Cloud-native platform demonstrating production-style DevOps patterns** on AWS EKS: Terraform-provisioned infrastructure, GitHub Actions CI, ArgoCD GitOps delivery, observability, and secrets management in a single monorepo.
 
-Built as a monorepo: application code, Helm charts, Terraform infrastructure, and CI/CD workflows all in one place.
+This repository focuses on practical platform engineering across infrastructure, Kubernetes operations, delivery automation, and operational guardrails.
+
+## What This Project Demonstrates
+
+- Infrastructure provisioning with Terraform for EKS, ECR, IAM/OIDC, storage, and secrets integration
+- Secure CI/CD with GitHub Actions using AWS OIDC federation instead of long-lived cloud credentials
+- GitOps delivery with ArgoCD, where image updates are committed back to Git and synced to the cluster
+- Kubernetes application packaging with Helm, plus ingress, monitoring, logging, and secret synchronization
+- Operational thinking: health checks, teardown workflow, immutable image tags, vulnerability scanning, and remote Terraform state
 
 ## Tech Stack
 
@@ -75,6 +83,18 @@ Built as a monorepo: application code, Helm charts, Terraform infrastructure, an
 > and performs initial Helm deploys so ArgoCD can adopt them. After bootstrap, all ongoing deploys are GitOps-driven —
 > CI commits image tags and ArgoCD syncs the cluster. See [Key Design Decisions](#key-design-decisions) for rationale.
 
+## Design Tradeoffs
+
+This repository is designed to remain practical to run in a personal AWS account. Some defaults intentionally optimize for simplicity and cost rather than full production hardening:
+
+- Public EKS API endpoint to simplify bootstrap from a local machine or GitHub-hosted runner
+- Default-VPC support to reduce setup overhead for a personal deployment
+- Single-cluster topology rather than separate dev/staging/prod environments
+- Self-signed TLS issuer for demo use without requiring a real domain
+- Manual bootstrap workflow for first-time cluster adoption before steady-state GitOps takes over
+
+These are deliberate design choices, not claims of turnkey enterprise production readiness.
+
 ## Repository Structure
 
 ```
@@ -134,9 +154,9 @@ CloudOps_CRM/
 | **Pod security contexts** | `readOnlyRootFilesystem`, `runAsNonRoot`, `drop: ALL` capabilities — defense in depth |
 | **Single Ingress NLB** | One AWS load balancer routes all traffic — cost-effective, centralized TLS termination point |
 
-## Known Limitations & Production Hardening
+## Production Hardening
 
-This project demonstrates production-ready patterns in a working deployment. For actual production use, apply the following hardening steps:
+This project uses production-style patterns in a working deployment. For a real production environment, apply the following hardening steps:
 
 | Area | Current State | Production Recommendation |
 |------|--------------|--------------------------|
@@ -213,6 +233,36 @@ pytest test_app.py -v         # 18 unit tests
 | Kibana | `/kibana` | `elastic` / (from K8s secret) |
 | Grafana | `/grafana` | `admin` / (from K8s secret) |
 | ArgoCD | `/argocd` | `admin` / (from K8s secret) |
+
+## Verification Artifacts
+
+These are the most useful artifacts to inspect when evaluating the implementation:
+
+- GitHub Actions pipeline run showing build, tests, vulnerability scanning, ECR push, and GitOps tag update
+- ArgoCD Applications showing synced application state after bootstrap
+- Grafana dashboards scraping the CRM `/metrics` endpoint through the `ServiceMonitor`
+- Kibana showing logs collected by Fluentd from application and cluster workloads
+- Terraform plan/apply output for the AWS infrastructure under [`infra/`](infra/)
+
+Recommended screenshots to include in documentation:
+
+- ArgoCD application overview
+- Grafana dashboard with request metrics
+- Kibana discover view with CRM logs
+- GitHub Actions successful workflow run
+- `kubectl get pods -A` after bootstrap
+
+Recommended verification commands:
+
+```bash
+make tf-validate
+make helm-lint
+make test
+kubectl get applications -n argocd
+kubectl get pods -A
+```
+
+These artifacts do more to establish credibility than extra claims in the README.
 
 ## Documentation
 
