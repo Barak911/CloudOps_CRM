@@ -15,13 +15,16 @@ def app():
 
     import app as app_module
     original_db = app_module.mongo.db
+    original_cx = app_module.mongo.cx
     app_module.mongo.db = mock_db
+    app_module.mongo.cx = mock_client
 
     yield flask_app
 
     # Clean up
     mock_db.persons.drop()
     app_module.mongo.db = original_db
+    app_module.mongo.cx = original_cx
 
 @pytest.fixture
 def client(app):
@@ -33,12 +36,36 @@ def client(app):
 # ---------------------------------------------------------------------------
 
 def test_health_check(client):
-    """Test health check endpoint"""
+    """Test liveness check endpoint"""
     response = client.get('/health')
     assert response.status_code == 200
     data = response.get_json()
     assert data['status'] == 'healthy'
     assert 'service' in data
+
+def test_ready_check_healthy(client):
+    """Test readiness endpoint returns 200 when MongoDB is available"""
+    response = client.get('/ready')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['status'] == 'ready'
+    assert data['database'] == 'connected'
+
+def test_ready_check_unhealthy(client):
+    """Test readiness endpoint returns 503 when MongoDB is unavailable"""
+    import app as app_module
+    from unittest.mock import PropertyMock
+    original_cx = app_module.mongo.cx
+    # Simulate broken connection by replacing cx with object that raises on ping
+    app_module.mongo.cx = type('BrokenClient', (), {
+        'admin': property(lambda self: (_ for _ in ()).throw(Exception("connection refused")))
+    })()
+    response = client.get('/ready')
+    app_module.mongo.cx = original_cx  # restore before assertion
+    assert response.status_code == 503
+    data = response.get_json()
+    assert data['status'] == 'not ready'
+    assert data['database'] == 'disconnected'
 
 def test_root_serves_html(client):
     """Test root endpoint serves frontend HTML"""

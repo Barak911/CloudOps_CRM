@@ -22,7 +22,7 @@ echo "Starting E2E tests..."
 # Wait for application to be ready
 echo "Waiting for application to be healthy..."
 for i in {1..30}; do
-    if curl -f $BASE_URL/health > /dev/null 2>&1; then
+    if curl -f $BASE_URL/ready > /dev/null 2>&1; then
         echo "Application is healthy!"
         break
     fi
@@ -32,10 +32,15 @@ done
 
 # ── Core CRUD Tests ──────────────────────────────────────────────────────
 
-# Test 1: Health check
-echo "Test 1: Health check"
+# Test 1: Liveness check
+echo "Test 1: Liveness check"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" $BASE_URL/health)
-[ "$STATUS" = "200" ] && pass "Health check" || fail "Health check returned $STATUS"
+[ "$STATUS" = "200" ] && pass "Liveness check" || fail "Liveness check returned $STATUS"
+
+# Test 1b: Readiness check (verifies DB connectivity)
+echo "Test 1b: Readiness check"
+STATUS=$(curl -s -o /dev/null -w "%{http_code}" $BASE_URL/ready)
+[ "$STATUS" = "200" ] && pass "Readiness check" || fail "Readiness check returned $STATUS"
 
 # Test 2: Root serves HTML frontend
 echo "Test 2: Root endpoint serves HTML"
@@ -171,6 +176,6 @@ curl -s -o /dev/null -X DELETE $BASE_URL/person/123
 
 echo ""
 echo "======================================"
-echo "All $PASSED E2E tests passed!"
+echo "All $PASSED E2E tests passed! (including readiness check)"
 echo "======================================"
 exit 0

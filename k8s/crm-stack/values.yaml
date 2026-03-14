@@ -40,6 +40,7 @@ crm-app:
   healthCheck:
     enabled: true
     path: /health
+    readinessPath: /ready
     livenessProbe:
       initialDelaySeconds: 30
       periodSeconds: 10

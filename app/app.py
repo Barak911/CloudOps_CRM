@@ -102,7 +102,8 @@ def api_info():
         "service": "CRM REST API",
         "version": "3.1.0",
         "endpoints": {
-            "GET  /health": "Health check",
+            "GET  /health": "Liveness check (process alive)",
+            "GET  /ready": "Readiness check (includes DB connectivity)",
             "GET  /metrics": "Prometheus metrics",
             "GET  /stats": "Collection statistics",
             "GET  /person": "List all persons (supports ?page=&limit=)",
@@ -122,8 +123,18 @@ def api_info():
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint"""
+    """Liveness check — confirms the process is running (no dependency checks)"""
     return jsonify({"status": "healthy", "service": "CRM API"}), 200
+
+@app.route('/ready', methods=['GET'])
+def ready():
+    """Readiness check — verifies MongoDB connectivity before accepting traffic"""
+    try:
+        mongo.cx.admin.command('ping')
+        return jsonify({"status": "ready", "service": "CRM API", "database": "connected"}), 200
+    except Exception as e:
+        logger.warning(f"Readiness check failed: {e}")
+        return jsonify({"status": "not ready", "service": "CRM API", "database": "disconnected", "error": str(e)}), 503
 
 @app.route('/stats', methods=['GET'])
 def stats():

@@ -104,8 +104,8 @@ Metrics: `flask_http_request_total`, `flask_http_request_duration_seconds`
 - ClusterIP services (not exposed directly)
 - Immutable ECR tags + scan-on-push
 - Encrypted EBS volumes
-- Trivy image scanning blocks CRITICAL/HIGH vulnerabilities
-- Pinned GitHub Actions versions (no `@master` refs)
+- Trivy image scanning (pinned version) blocks CRITICAL/HIGH vulnerabilities
+- GitHub Actions pinned to commit SHAs (no mutable tag refs)
 
 ## Cost Optimization
 

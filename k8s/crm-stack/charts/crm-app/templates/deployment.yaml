@@ -71,7 +71,7 @@ spec:
           failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
         readinessProbe:
           httpGet:
-            path: {{ .Values.healthCheck.path }}
+            path: {{ .Values.healthCheck.readinessPath | default .Values.healthCheck.path }}
             port: {{ .Values.service.targetPort }}
           initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
           periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
