@@ -234,36 +234,6 @@ pytest test_app.py -v         # 18 unit tests
 | Grafana | `/grafana` | `admin` / (from K8s secret) |
 | ArgoCD | `/argocd` | `admin` / (from K8s secret) |
 
-## Verification Artifacts
-
-These are the most useful artifacts to inspect when evaluating the implementation:
-
-- GitHub Actions pipeline run showing build, tests, vulnerability scanning, ECR push, and GitOps tag update
-- ArgoCD Applications showing synced application state after bootstrap
-- Grafana dashboards scraping the CRM `/metrics` endpoint through the `ServiceMonitor`
-- Kibana showing logs collected by Fluentd from application and cluster workloads
-- Terraform plan/apply output for the AWS infrastructure under [`infra/`](infra/)
-
-Recommended screenshots to include in documentation:
-
-- ArgoCD application overview
-- Grafana dashboard with request metrics
-- Kibana discover view with CRM logs
-- GitHub Actions successful workflow run
-- `kubectl get pods -A` after bootstrap
-
-Recommended verification commands:
-
-```bash
-make tf-validate
-make helm-lint
-make test
-kubectl get applications -n argocd
-kubectl get pods -A
-```
-
-These artifacts do more to establish credibility than extra claims in the README.
-
 ## Documentation
 
 | Document | Contents |
