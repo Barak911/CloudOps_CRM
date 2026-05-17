@@ -1,16 +1,49 @@
 # CloudOps CRM
 
-**Cloud-native platform demonstrating production-style DevOps patterns** on AWS EKS: Terraform-provisioned infrastructure, GitHub Actions CI, ArgoCD GitOps delivery, observability, and secrets management in a single monorepo.
+**A GitOps platform on AWS EKS — personal portfolio project exercising production-style DevOps patterns end-to-end.**
 
-This repository focuses on practical platform engineering across infrastructure, Kubernetes operations, delivery automation, and operational guardrails.
+Single-developer learning project built to practice the full platform-engineering stack in one repo: Terraform infrastructure, GitHub Actions CI with AWS OIDC, ArgoCD-managed delivery, observability, and secrets management. It exercises the patterns; it is not a production deployment of them.
 
-## What This Project Demonstrates
+## Scope & Intent
 
-- Infrastructure provisioning with Terraform for EKS, ECR, IAM/OIDC, storage, and secrets integration
-- Secure CI/CD with GitHub Actions using AWS OIDC federation instead of long-lived cloud credentials
-- GitOps delivery with ArgoCD, where image updates are committed back to Git and synced to the cluster
-- Kubernetes application packaging with Helm, plus ingress, monitoring, logging, and secret synchronization
-- Operational thinking: health checks, teardown workflow, immutable image tags, vulnerability scanning, and remote Terraform state
+Built to answer one question: *can I run a real-feeling delivery pipeline solo, in a single AWS account, without papering over the hard parts?*
+
+The patterns implemented here are the ones I'd reach for in a production environment. The **scope** is deliberately personal-account-sized — see [Out of Scope](#out-of-scope-intentionally), [Design Tradeoffs](#design-tradeoffs), and [Production Hardening](#production-hardening) below for the line between "pattern" and "fully-hardened production."
+
+## Out of Scope (intentionally)
+
+- Multi-AZ / cross-region high availability for MongoDB
+- Separate dev / staging / prod clusters
+- Real DNS + ACM-issued TLS (uses self-signed ClusterIssuer)
+- Production-grade alerting, SLOs, runbooks, on-call wiring
+- Multi-tenant namespace isolation / NetworkPolicies beyond basics
+- Tested disaster-recovery procedure with documented RPO/RTO
+
+Each of these is a real, distinct engineering problem. Half-implementing them as portfolio decoration would be misleading; documenting that I know they're missing is the honest version.
+
+## Design Tradeoffs
+
+Personal-account practicality drives a few defaults I'd flip for real production:
+
+- **Public EKS API endpoint** — simplifies bootstrap from a laptop and GitHub-hosted runners. In prod: restrict `cluster_endpoint_public_access_cidrs` to known CIDRs, or disable public access entirely.
+- **Default VPC support** — reduces setup friction. The Terraform supports a dedicated VPC with private subnets via `use_custom_vpc=true`; left off by default for runnability.
+- **Single cluster** — one EKS cluster serves everything. Separate dev / staging / prod clusters are the obvious production answer.
+- **Self-signed TLS** — cert-manager issues a working cert; browsers warn. Swap to Let's Encrypt or ACM + Route53 + a real domain for prod.
+- **Manual bootstrap workflow** — one-time imperative install of ArgoCD and ExternalSecrets Operator, after which ArgoCD adopts everything. The chicken-and-egg of "GitOps for the GitOps controller" is an honest boundary, not a gap.
+
+## What This Project Implements
+
+The patterns below are the substance. Each one is end-to-end, not stubbed.
+
+- **Infrastructure-as-code** for the full AWS footprint — EKS, ECR (immutable tags), IAM/OIDC, EBS CSI, S3 remote state, Secrets Manager — in `infra/`
+- **OIDC federation** from GitHub Actions to AWS — no long-lived keys in CI secrets
+- **GitOps delivery with ArgoCD** — CI writes new image SHAs into the GitOps repo; ArgoCD reconciles. Day-2 CI never touches the cluster.
+- **Helm umbrella chart** packaging the app, MongoDB, and the EFK stack as a single unit with shared config
+- **Observability** — Prometheus + Grafana with a ServiceMonitor for the app, Fluentd → Elasticsearch → Kibana for logs
+- **Secrets management** — AWS Secrets Manager + ExternalSecrets Operator via IRSA. No secrets in Git, no static AWS keys in the cluster.
+- **Pod-level hardening** — `readOnlyRootFilesystem`, `runAsNonRoot`, dropped capabilities
+- **CI security scanning** — Trivy + pip-audit, fail-fast on CRITICAL/HIGH
+- **Teardown workflow** — full destroy path, because building without tearing down isn't really infrastructure-as-code
 
 ## Tech Stack
 
@@ -19,14 +52,14 @@ This repository focuses on practical platform engineering across infrastructure,
 | **Application** | Python Flask REST API, Gunicorn, MongoDB |
 | **Containers** | Docker (multi-stage builds), Amazon ECR |
 | **Orchestration** | Kubernetes (AWS EKS), Helm umbrella chart |
-| **GitOps** | ArgoCD — auto-syncs from Git after one-time bootstrap |
-| **CI/CD** | GitHub Actions with OIDC auth (no stored AWS keys) |
-| **Infrastructure** | Terraform (EKS, ECR, IAM OIDC, EBS CSI) |
+| **GitOps** | ArgoCD |
+| **CI/CD** | GitHub Actions with AWS OIDC federation |
+| **Infrastructure** | Terraform (EKS, ECR, IAM OIDC, EBS CSI, Secrets Manager) |
 | **Monitoring** | Prometheus, Grafana, ServiceMonitor CRDs |
-| **Logging** | Fluentd (DaemonSet) -> Elasticsearch -> Kibana |
-| **Networking** | Nginx Ingress Controller, single AWS NLB for all services |
+| **Logging** | Fluentd (DaemonSet) → Elasticsearch → Kibana |
+| **Networking** | Nginx Ingress Controller, single AWS NLB |
 | **Secrets** | AWS Secrets Manager + ExternalSecrets Operator (IRSA) |
-| **Security** | Pod security contexts, read-only root FS, Trivy + pip-audit scans, OIDC (no stored keys), app-scoped DB credentials |
+| **Security** | Pod security contexts, read-only root FS, Trivy + pip-audit, app-scoped DB credentials |
 
 ## Architecture
 
@@ -48,9 +81,9 @@ This repository focuses on practical platform engineering across infrastructure,
                                  |
                                  v
                      +-----------+-----------+
-                     |       ArgoCD         |
-                     |  Detects Git change  |
-                     |  Syncs to cluster    |
+                     |       ArgoCD          |
+                     |  Detects Git change   |
+                     |  Syncs to cluster     |
                      +-----------+-----------+
                                  |
                                  v
@@ -68,7 +101,7 @@ This repository focuses on practical platform engineering across infrastructure,
      +-----------------------------------------------------------+
 ```
 
-### GitOps Flow
+### GitOps flow
 
 ```
 1. Developer pushes to app/           4. ArgoCD detects tag change in Git
@@ -76,24 +109,63 @@ This repository focuses on practical platform engineering across infrastructure,
 3. CI commits new image tag [skip ci] 6. New version is live — zero manual steps
 ```
 
-**CI** (GitHub Actions) owns: build, test, vulnerability scan, ECR push, image tag update.
-**CD** (ArgoCD) owns: every Kubernetes deployment after initial bootstrap.
+**CI** owns: build, test, scan, ECR push, image-tag update.
+**CD (ArgoCD)** owns: every cluster operation after initial bootstrap.
 
-> **Note:** The one-time `bootstrap-cluster.yml` workflow imperatively installs ArgoCD, ExternalSecrets Operator,
-> and performs initial Helm deploys so ArgoCD can adopt them. After bootstrap, all ongoing deploys are GitOps-driven —
-> CI commits image tags and ArgoCD syncs the cluster. See [Key Design Decisions](#key-design-decisions) for rationale.
+> **Bootstrap honesty.** The one-time `bootstrap-cluster.yml` workflow imperatively installs ArgoCD and ExternalSecrets Operator so ArgoCD can adopt them afterward. "GitOps from absolute zero" requires bootstrapping the GitOps controller itself with something else — that's an honest boundary, not a gap.
 
-## Design Tradeoffs
+## Key Decisions (and the alternatives I considered first)
 
-This repository is designed to remain practical to run in a personal AWS account. Some defaults intentionally optimize for simplicity and cost rather than full production hardening:
+A few choices that aren't obvious from the file tree.
 
-- Public EKS API endpoint to simplify bootstrap from a local machine or GitHub-hosted runner
-- Default-VPC support to reduce setup overhead for a personal deployment
-- Single-cluster topology rather than separate dev/staging/prod environments
-- Self-signed TLS issuer for demo use without requiring a real domain
-- Manual bootstrap workflow for first-time cluster adoption before steady-state GitOps takes over
+### ArgoCD over `helm upgrade` from CI
 
-These are deliberate design choices, not claims of turnkey enterprise production readiness.
+The lazy path is `helm upgrade --install` in a GitHub Actions step. Works, fewer components to operate, most small projects use it.
+
+I picked ArgoCD because cluster state then lives in Git, not in the last successful CI log. Drift is detected and self-healed, day-2 CI doesn't need kubectl credentials, and rollback is a one-line `git revert` that ArgoCD picks up automatically. The cost: one more controller to operate, multi-source App YAMLs that aren't obvious the first time you read them, and a slower iteration loop (you commit a value change to see it apply).
+
+For a one-developer project the cost is real. I took it on because the GitOps muscle is the one I want to build, and the discipline of "if it's not in Git, it's not in the cluster" is worth more than the saved minutes.
+
+### Monorepo
+
+App, infra, and Kubernetes manifests live in one repo. The split-repo alternative is what most orgs end up with at scale — one team per repo, clean boundaries, separate CI.
+
+At one-developer scale the coordination cost of split repos is higher than the blast-radius cost of a monorepo: atomic full-stack PRs ("add a new field, route, dashboard, and metric") are one commit, not three coordinated ones. At org scale I'd split.
+
+### ExternalSecrets + IRSA, not sealed-secrets or sops
+
+The two common alternatives encrypt secrets in Git. They work, they're simple to bootstrap, they avoid an external dependency.
+
+I picked ExternalSecrets because *no version of a secret* lives in Git, even encrypted. Rotating a secret is a Secrets Manager UI operation, not a git push. IRSA means the cluster also has no static AWS credentials — workloads assume roles via their pod service-account identity.
+
+Cost: another operator to install and operate, and a hard dependency on AWS Secrets Manager. For a portfolio project that cost is mostly setup time, paid once.
+
+### Immutable ECR tags + commit-SHA pinning
+
+Every image is tagged with its commit SHA; `latest` is never deployed. The alternative — tag `latest` or `prod` and reuse — saves typing.
+
+The cost is trivial; the benefit (rollback is "set the value in Git back to the previous SHA," and there's zero ambiguity about what's running) is large. Standard practice for a reason.
+
+### Single Ingress + one NLB
+
+Per-service load balancers are the easy default in EKS — every `Service` of type `LoadBalancer` gets its own NLB at ~$18/month before traffic.
+
+One Nginx Ingress Controller behind a single NLB routes everything by path: cheaper, one TLS termination point to manage, easier mental model. Cost: the Ingress Controller becomes a SPOF and needs its own monitoring and upgrade discipline — manageable in practice with two replicas.
+
+## Production Hardening
+
+Everything in this table is a real production gap, not a stylistic preference. Current state is intentional for a personal-account portfolio; the recommendation is what I'd do for actual production.
+
+| Area | Current State | Production Recommendation |
+|------|--------------|--------------------------|
+| EKS API endpoint | Public (`0.0.0.0/0`) | Restrict to known CIDRs, or disable public access entirely |
+| VPC | Default VPC (custom available via `use_custom_vpc=true`) | Dedicated VPC, private subnets, NAT gateways |
+| IAM — CI | `cluster-admin` for bootstrap; day-2 only pushes to ECR | Revoke bootstrap role post-setup; keep day-2 scope |
+| TLS | cert-manager + self-signed `ClusterIssuer` | Let's Encrypt or ACM with Route53-validated cert, real domain |
+| MongoDB HA | Single replica on EBS-backed PVC | Replica set across AZs, or managed (DocumentDB / Atlas) |
+| Observability | Prometheus + Grafana + EFK installed, no alerts wired | SLO definitions, Alertmanager rules, on-call rotation, incident playbooks |
+| Backups | None implemented | Velero or scheduled volume snapshots; documented restore procedure |
+| Secrets rotation | Manual via Secrets Manager | Automated rotation Lambdas with downstream notification |
 
 ## Repository Structure
 
@@ -105,12 +177,12 @@ CloudOps_CRM/
 │   └── cleanup-deployment.yml    # Full teardown workflow
 │
 ├── app/                          # Flask CRM application
-│   ├── app.py                    # REST API (CRUD + search + bulk ops + pagination)
-│   ├── Dockerfile                # Multi-stage build with .dockerignore
+│   ├── app.py                    # REST API (CRUD + search + bulk + pagination)
+│   ├── Dockerfile                # Multi-stage build
 │   ├── test_app.py               # 18 unit tests (pytest)
 │   ├── test_e2e.sh               # 20 end-to-end tests
-│   ├── requirements.txt          # Runtime deps only
-│   ├── requirements-dev.txt      # Runtime + test deps
+│   ├── requirements.txt
+│   ├── requirements-dev.txt
 │   └── docker-compose.test.yml   # E2E test environment
 │
 ├── k8s/
@@ -119,54 +191,21 @@ CloudOps_CRM/
 │   │   ├── values.yaml           # CI auto-updates image.tag here
 │   │   └── charts/               # Subcharts (crm-app, mongodb are custom)
 │   ├── argocd/                   # ArgoCD Application CRDs
-│   │   ├── crm-stack-app.yaml    # CRM + MongoDB + EFK (multi-source)
-│   │   ├── prometheus-app.yaml   # Prometheus + Grafana (multi-source)
-│   │   ├── nginx-ingress-app.yaml# Ingress Controller (multi-source)
-│   │   └── manifests-app.yaml    # Ingress rules, ServiceMonitor, dashboard
 │   ├── manifests/                # Plain K8s manifests (Ingress, ServiceMonitor, ExternalSecrets)
 │   └── values/                   # Per-environment Helm value overrides
 │
 ├── infra/                        # Terraform (AWS)
 │   ├── eks.tf                    # EKS cluster + managed node group
 │   ├── ecr.tf                    # Container registry (immutable tags)
-│   ├── github-oidc.tf            # OIDC federation (no stored AWS keys)
+│   ├── github-oidc.tf            # OIDC federation
 │   ├── ebs-csi-driver.tf         # Persistent storage (gp3 default)
-│   ├── secrets.tf                # AWS Secrets Manager + IRSA for ExternalSecrets
+│   ├── secrets.tf                # AWS Secrets Manager + IRSA
 │   ├── backend.tf                # S3 remote state
-│   └── ARCHITECTURE.md           # Infrastructure documentation
+│   └── ARCHITECTURE.md
 │
 ├── Makefile                      # Developer shortcuts (test, build, lint, plan)
 └── CHANGELOG.md                  # Full change history across all phases
 ```
-
-## Key Design Decisions
-
-| Decision | Why |
-|----------|-----|
-| **Monorepo** | App, infra, and K8s in one repo = atomic changes, single PR for full-stack features |
-| **ArgoCD over Helm-in-CI** | After bootstrap, cluster state is always in Git. Drift detection + self-healing. No `kubectl` in day-2 pipelines. |
-| **Multi-source ArgoCD Apps** | Helm chart from one source, values from another — clean separation of config vs charts |
-| **OIDC federation** | GitHub Actions authenticates to AWS via short-lived tokens. Zero stored secrets. |
-| **ExternalSecrets** | MongoDB root + app credentials stored in AWS Secrets Manager, synced to K8s via IRSA — no secrets in Git or CLI args |
-| **Least-privilege CI** | GitHub Actions uses OIDC federation (no stored keys). Bootstrap requires cluster-admin for CRD/namespace creation; day-2 CI only pushes to ECR — ArgoCD handles all cluster operations. Developer access is scoped to view + namespace-level edit. |
-| **Helm umbrella chart** | CRM app + MongoDB + EFK deployed as a single unit with shared config (namespace, labels) |
-| **Immutable ECR tags** | Every image tagged with commit SHA — no `latest` in production, full traceability |
-| **Pod security contexts** | `readOnlyRootFilesystem`, `runAsNonRoot`, `drop: ALL` capabilities — defense in depth |
-| **Single Ingress NLB** | One AWS load balancer routes all traffic — cost-effective, centralized TLS termination point |
-
-## Production Hardening
-
-This project uses production-style patterns in a working deployment. For a real production environment, apply the following hardening steps:
-
-| Area | Current State | Production Recommendation |
-|------|--------------|--------------------------|
-| **EKS API endpoint** | Public (`0.0.0.0/0`) — easy bootstrap from anywhere | Restrict `cluster_endpoint_public_access_cidrs` to VPN/office CIDRs in `terraform.tfvars`, or disable public access entirely |
-| **VPC** | Default VPC (set `use_custom_vpc=true` for dedicated VPC with private subnets + NAT) | Enable custom VPC in `terraform.tfvars` for production |
-| **IAM — CI role** | `cluster-admin` for bootstrap (day-2 CI only pushes to ECR; ArgoCD handles deploy) | Already least-privilege for day-2 — bootstrap role could be revoked post-setup |
-| **IAM — developer** | View (cluster) + Edit (crm, monitoring, argocd namespaces) | Already scoped — elevate to admin only if needed |
-| **ECR force_delete** | `false` (safe default, override with `-var='ecr_force_destroy=true'`) | Keep `false` in production; use `true` only for dev/test teardown |
-| **TLS** | cert-manager with self-signed ClusterIssuer (valid TLS, browser warning expected) | Replace `selfsigned-issuer` with a Let's Encrypt ClusterIssuer, use ACM certificate + Route53 DNS for a real domain |
-| **Bootstrap workflow** | Imperative installs (ArgoCD, CRDs, initial Helm deploy) | Expected — bootstrap is a one-time operation; all ongoing deploys are GitOps |
 
 ## Quick Start
 
@@ -176,12 +215,12 @@ This project uses production-style patterns in a working deployment. For a real 
 - Terraform >= 1.10
 - kubectl, Helm 3.x, Docker
 
-### 1. Provision Infrastructure
+### 1. Provision infrastructure
 
 ```bash
 cd infra
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
+# Edit terraform.tfvars
 
 terraform init \
   -backend-config="bucket=YOUR_STATE_BUCKET" \
@@ -189,17 +228,15 @@ terraform init \
 terraform apply
 ```
 
-### 2. Bootstrap the Cluster
+### 2. Bootstrap the cluster
 
-Run the **Bootstrap EKS Cluster** workflow from GitHub Actions (manual trigger).
+Run the **Bootstrap EKS Cluster** workflow from GitHub Actions (manual trigger). This installs ArgoCD, deploys initial services, and runs integration tests.
 
-This installs ArgoCD, bootstraps all services, and runs integration tests.
+### 3. Ongoing deployments
 
-### 3. Ongoing Deployments
+Push to `app/` on `main`. CI builds, tests, scans, pushes to ECR, commits the new image tag. ArgoCD auto-syncs.
 
-Push to `app/` on `main` — CI builds, tests, pushes to ECR, commits new image tag. ArgoCD auto-syncs. Done.
-
-### 4. Local Development
+### 4. Local development
 
 ```bash
 cd app && cp .env.example .env
@@ -243,3 +280,11 @@ pytest test_app.py -v         # 18 unit tests
 | [`infra/TROUBLESHOOTING.md`](infra/TROUBLESHOOTING.md) | Common issues and fixes |
 | [`k8s/MONITORING.md`](k8s/MONITORING.md) | Observability stack setup |
 | [`CHANGELOG.md`](CHANGELOG.md) | Complete change history |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+---
+
+If you spot a pattern that's wrong here or a tradeoff I framed badly, I'd genuinely like to hear it — open an issue or reach out.
