@@ -195,6 +195,7 @@ jobs:
           fi
 
       - name: Tag and push image to ECR
+        id: push
         if: steps.check-image.outputs.exists == 'false'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -220,24 +221,99 @@ jobs:
         run: |
           echo "Skipping push - image already exists in ECR"
 
-      # Stage 7: Update image tag for ArgoCD GitOps
-      - name: Update image tag for ArgoCD
+      # Stage 7: Capture image digest (sha256) for supply-chain pinning.
+      # Subsequent steps (cosign sign + SBOM attest + ArgoCD GitOps) all
+      # reference the image by digest, not tag.
+      - name: Resolve image digest from ECR
+        id: digest
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
+        run: |
+          DIGEST=$(aws ecr describe-images \
+            --repository-name ${{ env.ECR_REPOSITORY }} \
+            --image-ids imageTag=$IMAGE_TAG \
+            --region ${{ env.AWS_REGION }} \
+            --query 'imageDetails[0].imageDigest' --output text)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "None" ]; then
+            echo "Failed to resolve digest for tag $IMAGE_TAG"
+            exit 1
+          fi
+          echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          echo "image_ref=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}@$DIGEST" >> $GITHUB_OUTPUT
+          echo "Resolved: $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}@$DIGEST"
+
+      # Stage 8: Sign the image with cosign (keyless OIDC -> Fulcio + Rekor).
+      # No long-lived signing key required; identity is the GitHub Actions
+      # workflow that produced the image, recorded in Sigstore's transparency log.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@053f9b74638557590800a301da1ba82351507e2c # v3.8.1
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign image with cosign (keyless)
+        env:
+          IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes "$IMAGE_REF"
+          echo "Signed: $IMAGE_REF"
+
+      # Stage 9: Generate SBOM (syft) and attach as a cosign attestation.
+      # The attestation is itself signed (keyless) and pushed to ECR alongside
+      # the image, so downstream consumers can verify what's in the image.
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Generate SBOM (SPDX-JSON)
+        env:
+          IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
+        run: |
+          syft "$IMAGE_REF" -o spdx-json > /tmp/sbom.spdx.json
+          echo "SBOM: $(wc -l < /tmp/sbom.spdx.json) lines, $(jq '.packages | length' /tmp/sbom.spdx.json) packages"
+
+      - name: Attest SBOM with cosign
+        env:
+          IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign attest --yes --predicate /tmp/sbom.spdx.json \
+            --type spdxjson "$IMAGE_REF"
+          echo "SBOM attestation pushed for $IMAGE_REF"
+
+      # Stage 10: Update values.yaml with the new tag + digest for ArgoCD.
+      # ArgoCD picks up the change and reconciles; the deployment pulls by
+      # digest, so the tag is informational only.
+      - name: Update image tag + digest for ArgoCD
         env:
           IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          # Update ONLY the crm-app image tag (first tag: line in the file)
-          # Using 0,/pattern/ to avoid clobbering mongodb and fluentd image tags
-          sed -i "0,/^\(\s*\)tag:.*/s//\1tag: \"$IMAGE_TAG\"/" k8s/crm-stack/values.yaml
+          python3 - <<EOF
+          import re, pathlib
+          p = pathlib.Path("k8s/crm-stack/values.yaml")
+          text = p.read_text()
+          # Anchor under the "crm-app:" top-level key (first image: block).
+          # Replace ONLY the first occurrences of tag: / digest: / repository:
+          # within ~30 lines after "crm-app:".
+          def replace_first(pattern, repl, t):
+              return re.sub(pattern, repl, t, count=1, flags=re.MULTILINE)
+          # repository (only if placeholder is still present)
+          text = text.replace(
+              "REPLACE_WITH_ECR_URL/crm-app",
+              "$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}",
+          )
+          text = replace_first(r'^(\s*)tag:\s*".*"', r'\1tag: "$IMAGE_TAG"', text)
+          text = replace_first(r'^(\s*)digest:\s*".*"', r'\1digest: "$IMAGE_DIGEST"', text)
+          p.write_text(text)
+          print("Updated values.yaml")
+          EOF
 
-          # Update the repository URL if it's still the placeholder
-          sed -i "s|repository:.*REPLACE_WITH_ECR_URL.*|repository: $ECR_REGISTRY/${{ env.ECR_REPOSITORY }}|" k8s/crm-stack/values.yaml
-
-          # Commit and push the change (ArgoCD detects this and syncs)
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add k8s/crm-stack/values.yaml
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "ci: update image tag to $IMAGE_TAG [skip ci]"
+          git commit -m "ci: bump crm-app to $IMAGE_TAG ($IMAGE_DIGEST) [skip ci]"
           git pull --rebase origin main
           git push

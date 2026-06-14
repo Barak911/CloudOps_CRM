@@ -85,6 +85,10 @@ The patterns below are the substance. Each one is end-to-end, not stubbed.
 - **CI security scanning** — Trivy + pip-audit, fail-fast on CRITICAL/HIGH
 - **Teardown workflow** — full destroy path, because building without tearing down isn't really infrastructure-as-code
 
+## A note on the Flask app
+
+The Python/Flask CRM in [`app/`](app/) is a deliberately thin payload — its only job is to be a real workload for the platform: it exposes Prometheus metrics, logs as JSON for the EFK pipeline, uses an IRSA-fetched MongoDB credential, and has a readiness probe that hits the database. Authentication, schema validation, and rate-limiting are intentionally out of scope; the focus is on the surrounding platform, not the application.
+
 ## Tech Stack
 
 | Layer | Technology |

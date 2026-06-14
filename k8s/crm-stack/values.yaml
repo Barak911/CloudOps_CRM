@@ -22,7 +22,12 @@ crm-app:
   image:
     repository: 253490775265.dkr.ecr.us-east-1.amazonaws.com/crm-app
     tag: "v1.0.0-3095a0a"
-    pullPolicy: Always
+    # Digest is the canonical reference once CI signs the image with cosign.
+    # When non-empty, the deployment pulls by digest and the tag is just
+    # informational. Empty digest falls back to tag-based pulls for the
+    # very first bootstrap (before CI has produced a signed image).
+    digest: ""
+    pullPolicy: IfNotPresent
 
   service:
     type: ClusterIP

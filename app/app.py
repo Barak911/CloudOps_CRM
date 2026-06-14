@@ -55,6 +55,34 @@ app.logger.addHandler(handler)
 app.logger.setLevel(logging.INFO)
 logger = app.logger
 
+# Global error handler — logs the real exception internally with
+# correlation_id and returns a generic 500 to the client. Avoids leaking
+# stack traces / library internals through `str(e)`.
+from werkzeug.exceptions import HTTPException
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_exception(exc):
+    # Let Flask handle its own HTTP exceptions (404, 405, 400, etc.) normally.
+    if isinstance(exc, HTTPException):
+        return exc
+    correlation_id = getattr(request, 'correlation_id', 'unknown')
+    logger.error(
+        f"Unhandled exception: {type(exc).__name__}: {exc}",
+        extra={
+            'correlation_id': correlation_id,
+            'request_method': request.method,
+            'request_path': request.path,
+            'exc_type': type(exc).__name__,
+        },
+        exc_info=True,
+    )
+    return jsonify({
+        "error": "Internal server error",
+        "correlation_id": correlation_id,
+    }), 500
+
+
 # Request logging middleware
 @app.before_request
 def before_request():
@@ -139,17 +167,14 @@ def ready():
 @app.route('/stats', methods=['GET'])
 def stats():
     """Collection statistics"""
-    try:
-        total = mongo.db.persons.count_documents({})
-        latest = mongo.db.persons.find_one(sort=[("_id", -1)])
-        latest_id = str(latest['_id']) if latest else None
+    total = mongo.db.persons.count_documents({})
+    latest = mongo.db.persons.find_one(sort=[("_id", -1)])
+    latest_id = str(latest['_id']) if latest else None
 
-        return jsonify({
-            "total_persons": total,
-            "latest_entry_id": latest_id
-        }), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "total_persons": total,
+        "latest_entry_id": latest_id
+    }), 200
 
 # ---------------------------------------------------------------------------
 # Person CRUD
@@ -158,43 +183,39 @@ def stats():
 @app.route('/person', methods=['GET'])
 def get_persons():
     """Get all persons — supports pagination via ?page=&limit= and legacy ?id= lookup"""
-    try:
-        person_id = request.args.get('id')
+    person_id = request.args.get('id')
 
-        if person_id:
-            person = mongo.db.persons.find_one({"_id": ObjectId(person_id)})
-            if person:
-                person['_id'] = str(person['_id'])
-                return jsonify(person), 200
-            return jsonify({"error": "Person not found"}), 404
+    if person_id:
+        person = mongo.db.persons.find_one({"_id": ObjectId(person_id)})
+        if person:
+            person['_id'] = str(person['_id'])
+            return jsonify(person), 200
+        return jsonify({"error": "Person not found"}), 404
 
-        # Pagination
-        page = request.args.get('page', default=None, type=int)
-        limit = request.args.get('limit', default=20, type=int)
-        limit = min(limit, 100)  # cap at 100
+    # Pagination
+    page = request.args.get('page', default=None, type=int)
+    limit = request.args.get('limit', default=20, type=int)
+    limit = min(limit, 100)  # cap at 100
 
-        if page is not None:
-            skip = (max(page, 1) - 1) * limit
-            total = mongo.db.persons.count_documents({})
-            persons = list(mongo.db.persons.find().skip(skip).limit(limit))
-            for p in persons:
-                p['_id'] = str(p['_id'])
-            return jsonify({
-                "data": persons,
-                "page": max(page, 1),
-                "limit": limit,
-                "total": total,
-                "pages": (total + limit - 1) // limit if limit else 1
-            }), 200
-
-        # No pagination — return all
-        persons = list(mongo.db.persons.find())
+    if page is not None:
+        skip = (max(page, 1) - 1) * limit
+        total = mongo.db.persons.count_documents({})
+        persons = list(mongo.db.persons.find().skip(skip).limit(limit))
         for p in persons:
             p['_id'] = str(p['_id'])
-        return jsonify(persons), 200
+        return jsonify({
+            "data": persons,
+            "page": max(page, 1),
+            "limit": limit,
+            "total": total,
+            "pages": (total + limit - 1) // limit if limit else 1
+        }), 200
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    # No pagination — return all
+    persons = list(mongo.db.persons.find())
+    for p in persons:
+        p['_id'] = str(p['_id'])
+    return jsonify(persons), 200
 
 # ---------------------------------------------------------------------------
 # Search
@@ -203,26 +224,22 @@ def get_persons():
 @app.route('/person/search', methods=['GET'])
 def search_persons():
     """Search persons by name or email (case-insensitive substring match)"""
-    try:
-        query = request.args.get('q', '').strip()
-        if not query:
-            return jsonify({"error": "Query parameter 'q' is required"}), 400
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({"error": "Query parameter 'q' is required"}), 400
 
-        regex = re.compile(re.escape(query), re.IGNORECASE)
-        results = list(mongo.db.persons.find({
-            "$or": [
-                {"name": {"$regex": regex}},
-                {"email": {"$regex": regex}}
-            ]
-        }))
+    regex = re.compile(re.escape(query), re.IGNORECASE)
+    results = list(mongo.db.persons.find({
+        "$or": [
+            {"name": {"$regex": regex}},
+            {"email": {"$regex": regex}}
+        ]
+    }))
 
-        for p in results:
-            p['_id'] = str(p['_id'])
+    for p in results:
+        p['_id'] = str(p['_id'])
 
-        return jsonify(results), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify(results), 200
 
 # ---------------------------------------------------------------------------
 # Bulk operations
@@ -231,48 +248,40 @@ def search_persons():
 @app.route('/person/bulk', methods=['POST'])
 def bulk_add_persons():
     """Add multiple persons in one request. Body: [{ person_id, name, ... }, ...]"""
-    try:
-        data = request.get_json(silent=True)
+    data = request.get_json(silent=True)
 
-        if not data or not isinstance(data, list):
-            return jsonify({"error": "Request body must be a JSON array"}), 400
+    if not data or not isinstance(data, list):
+        return jsonify({"error": "Request body must be a JSON array"}), 400
 
-        if len(data) > 100:
-            return jsonify({"error": "Maximum 100 persons per bulk request"}), 400
+    if len(data) > 100:
+        return jsonify({"error": "Maximum 100 persons per bulk request"}), 400
 
-        # Validate each entry has person_id
-        for i, entry in enumerate(data):
-            if 'person_id' not in entry:
-                return jsonify({"error": f"Entry {i} missing 'person_id'"}), 400
+    # Validate each entry has person_id
+    for i, entry in enumerate(data):
+        if 'person_id' not in entry:
+            return jsonify({"error": f"Entry {i} missing 'person_id'"}), 400
 
-        result = mongo.db.persons.insert_many(data)
+    result = mongo.db.persons.insert_many(data)
 
-        return jsonify({
-            "message": f"{len(result.inserted_ids)} persons added",
-            "inserted_count": len(result.inserted_ids)
-        }), 201
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "message": f"{len(result.inserted_ids)} persons added",
+        "inserted_count": len(result.inserted_ids)
+    }), 201
 
 @app.route('/person/bulk', methods=['DELETE'])
 def bulk_delete_persons():
     """Delete multiple persons by custom IDs. Body: { "ids": ["id1", "id2"] }"""
-    try:
-        data = request.get_json(silent=True)
+    data = request.get_json(silent=True)
 
-        if not data or 'ids' not in data or not isinstance(data['ids'], list):
-            return jsonify({"error": "Request body must contain 'ids' array"}), 400
+    if not data or 'ids' not in data or not isinstance(data['ids'], list):
+        return jsonify({"error": "Request body must contain 'ids' array"}), 400
 
-        result = mongo.db.persons.delete_many({"person_id": {"$in": data['ids']}})
+    result = mongo.db.persons.delete_many({"person_id": {"$in": data['ids']}})
 
-        return jsonify({
-            "message": f"{result.deleted_count} persons deleted",
-            "deleted_count": result.deleted_count
-        }), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "message": f"{result.deleted_count} persons deleted",
+        "deleted_count": result.deleted_count
+    }), 200
 
 # ---------------------------------------------------------------------------
 # Single-person CRUD (existing)
@@ -281,106 +290,80 @@ def bulk_delete_persons():
 @app.route('/person/<person_id>', methods=['POST'])
 def add_person(person_id):
     """Add a new person with the given ID"""
-    try:
-        data = request.get_json(silent=True)
+    data = request.get_json(silent=True)
 
-        if not data:
-            logger.warning("Add person failed: No data provided", extra={'correlation_id': getattr(request, 'correlation_id', 'unknown')})
-            return jsonify({"error": "No data provided"}), 400
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
 
-        data['person_id'] = person_id
-        result = mongo.db.persons.insert_one(data)
+    data['person_id'] = person_id
+    result = mongo.db.persons.insert_one(data)
 
-        logger.info(
-            f"Person added successfully: {person_id}",
-            extra={
-                'correlation_id': getattr(request, 'correlation_id', 'unknown'),
-                'person_id': person_id,
-                'mongodb_id': str(result.inserted_id)
-            }
-        )
+    logger.info(
+        f"Person added successfully: {person_id}",
+        extra={
+            'correlation_id': getattr(request, 'correlation_id', 'unknown'),
+            'person_id': person_id,
+            'mongodb_id': str(result.inserted_id),
+        }
+    )
 
-        return jsonify({
-            "message": "Person added successfully",
-            "id": str(result.inserted_id),
-            "person_id": person_id
-        }), 201
-
-    except Exception as e:
-        logger.error(
-            f"Error adding person: {str(e)}",
-            extra={
-                'correlation_id': getattr(request, 'correlation_id', 'unknown'),
-                'person_id': person_id,
-                'error': str(e)
-            },
-            exc_info=True
-        )
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "message": "Person added successfully",
+        "id": str(result.inserted_id),
+        "person_id": person_id
+    }), 201
 
 @app.route('/person/<person_id>', methods=['GET'])
 def get_person_by_custom_id(person_id):
     """Get a person by their custom person_id"""
-    try:
-        person = mongo.db.persons.find_one({"person_id": person_id})
+    person = mongo.db.persons.find_one({"person_id": person_id})
 
-        if person:
-            person['_id'] = str(person['_id'])
-            return jsonify(person), 200
+    if person:
+        person['_id'] = str(person['_id'])
+        return jsonify(person), 200
 
-        return jsonify({"error": "Person not found"}), 404
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "Person not found"}), 404
 
 @app.route('/person/<person_id>', methods=['PUT'])
 def update_person(person_id):
     """Update an existing person by their custom person_id"""
-    try:
-        data = request.get_json(silent=True)
+    data = request.get_json(silent=True)
 
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
 
-        result = mongo.db.persons.update_one(
-            {"person_id": person_id},
-            {"$set": data}
-        )
+    result = mongo.db.persons.update_one(
+        {"person_id": person_id},
+        {"$set": data}
+    )
 
-        if result.matched_count == 0:
-            return jsonify({"error": "Person not found"}), 404
+    if result.matched_count == 0:
+        return jsonify({"error": "Person not found"}), 404
 
-        if result.modified_count == 0:
-            return jsonify({
-                "message": "No changes made",
-                "person_id": person_id
-            }), 200
-
+    if result.modified_count == 0:
         return jsonify({
-            "message": "Person updated successfully",
-            "person_id": person_id,
-            "modified_count": result.modified_count
+            "message": "No changes made",
+            "person_id": person_id
         }), 200
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "message": "Person updated successfully",
+        "person_id": person_id,
+        "modified_count": result.modified_count
+    }), 200
 
 @app.route('/person/<person_id>', methods=['DELETE'])
 def delete_person(person_id):
     """Delete a person by their custom person_id"""
-    try:
-        result = mongo.db.persons.delete_one({"person_id": person_id})
+    result = mongo.db.persons.delete_one({"person_id": person_id})
 
-        if result.deleted_count == 0:
-            return jsonify({"error": "Person not found"}), 404
+    if result.deleted_count == 0:
+        return jsonify({"error": "Person not found"}), 404
 
-        return jsonify({
-            "message": "Person deleted successfully",
-            "person_id": person_id
-        }), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify({
+        "message": "Person deleted successfully",
+        "person_id": person_id
+    }), 200
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5000))
