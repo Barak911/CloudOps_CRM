@@ -71,7 +71,8 @@ Both are configured automatically by `github-oidc.tf` and `eks.tf`.
 
 | Secret | Value |
 |--------|-------|
-| `AWS_ROLE_ARN` | `terraform output github_actions_role_arn` |
+| `AWS_BOOTSTRAP_ROLE_ARN` | `terraform output github_actions_bootstrap_role_arn` (used by bootstrap-cluster.yml and cleanup-deployment.yml; gated by `environment:production`) |
+| `AWS_CI_ROLE_ARN` | `terraform output github_actions_ci_role_arn` (used by ci.yml; ECR push only, trust scoped to `refs/heads/main`) |
 | `EKS_CLUSTER_NAME` | Your EKS cluster name |
 
 ---

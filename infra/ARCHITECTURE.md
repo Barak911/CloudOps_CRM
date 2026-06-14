@@ -54,7 +54,9 @@ AWS Account
       EBS CSI Driver -> gp3 StorageClass (encrypted)
 
   ECR Repository: crm-app (immutable tags, scan-on-push)
-  GitHub OIDC Role: github-actions-ecr-eks
+  GitHub OIDC Roles:
+    - github-actions-bootstrap (cluster-admin, gated by environment:production)
+    - github-actions-ci (ECR push only, trust scoped to refs/heads/main)
 ```
 
 ## CI/CD Pipelines

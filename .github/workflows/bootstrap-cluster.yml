@@ -27,6 +27,7 @@ jobs:
   build-and-push:
     name: Build and Push to ECR
     runs-on: ubuntu-latest
+    environment: production
     permissions:
       contents: write
       id-token: write
@@ -67,7 +68,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_BOOTSTRAP_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -146,6 +147,7 @@ jobs:
   deploy-argocd:
     name: Deploy via ArgoCD
     runs-on: ubuntu-latest
+    environment: production
     needs: build-and-push
     permissions:
       contents: read
@@ -165,7 +167,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_BOOTSTRAP_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS credentials
@@ -652,6 +654,7 @@ jobs:
   test-crm-application:
     name: Test CRM Application
     runs-on: ubuntu-latest
+    environment: production
     needs: deploy-argocd
     permissions:
       contents: read
@@ -664,7 +667,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_BOOTSTRAP_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig
@@ -1028,6 +1031,7 @@ jobs:
   test-observability:
     name: Test Observability Stack
     runs-on: ubuntu-latest
+    environment: production
     needs: deploy-argocd
     if: always() && needs.deploy-argocd.result == 'success'
     permissions:
@@ -1038,7 +1042,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_BOOTSTRAP_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig
@@ -1321,6 +1325,7 @@ jobs:
   deployment-report:
     name: Generate Full Stack Deployment Report
     runs-on: ubuntu-latest
+    environment: production
     needs: [build-and-push, deploy-argocd, test-crm-application, test-observability]
     if: always() && needs.deploy-argocd.result == 'success'
     permissions:
@@ -1331,7 +1336,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_BOOTSTRAP_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Update kubeconfig

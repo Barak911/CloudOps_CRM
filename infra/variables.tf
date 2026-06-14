@@ -46,6 +46,12 @@ variable "github_repo_name" {
   default     = "CloudOps_CRM"
 }
 
+variable "github_bootstrap_environment" {
+  description = "GitHub Actions environment name that gates assumption of the bootstrap role (configure required reviewers / branch protection on this environment in the GitHub UI)"
+  type        = string
+  default     = "production"
+}
+
 variable "cluster_endpoint_public_access_cidrs" {
   description = "CIDRs allowed to reach the EKS public endpoint (default: open for initial bootstrap)"
   type        = list(string)

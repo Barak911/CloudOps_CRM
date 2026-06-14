@@ -59,20 +59,20 @@ kubectl get nodes
 
 Terraform creates EKS Access Entries for:
 1. **Developer user** -- from `developer_user_arn` variable
-2. **GitHub Actions role** -- created automatically in `github-oidc.tf`
+2. **`github-actions-bootstrap`** -- cluster-admin, used only by the manual bootstrap and cleanup workflows
+3. **`github-actions-ci`** -- *no* access entry. Day-2 CI does not touch the cluster; ArgoCD owns deployment.
 
-- **Developer user** receives `AmazonEKSViewPolicy` cluster-wide and `AmazonEKSEditPolicy` scoped to the `crm`, `monitoring`, and `argocd` namespaces
-- **GitHub Actions role** receives `AmazonEKSClusterAdminPolicy` for bootstrap operations; day-2 delivery is handled through ArgoCD and ECR push permissions
+- **Developer user** receives `AmazonEKSViewPolicy` cluster-wide and `AmazonEKSEditPolicy` scoped to the `crm`, `monitoring`, and `argocd` namespaces.
+- **`github-actions-bootstrap`** receives `AmazonEKSClusterAdminPolicy`. Trust is restricted to the `production` GitHub Actions environment (see `var.github_bootstrap_environment`), so a misconfigured PR cannot assume it. Gate with required reviewers in the repo's `Settings -> Environments -> production`.
+- **`github-actions-ci`** has ECR push only. Trust is restricted to `ref:refs/heads/main`.
 
 ## GitHub Actions Setup
 
-1. Get the role ARN: `terraform output github_actions_role_arn`
-2. Add to repo Settings -> Secrets -> `AWS_ROLE_ARN`
-3. Add cluster name to repo Settings -> Secrets -> `EKS_CLUSTER_NAME`
-4. (Optional) Restrict the OIDC trust policy in `github-oidc.tf` to your specific repo:
-   ```hcl
-   values = ["repo:<your-org>/<your-repo>:*"]
-   ```
+1. Create the `production` environment in `Settings -> Environments` (add required reviewers / branch restrictions).
+2. `terraform output github_actions_bootstrap_role_arn` -> add as repo secret `AWS_BOOTSTRAP_ROLE_ARN`.
+3. `terraform output github_actions_ci_role_arn` -> add as repo secret `AWS_CI_ROLE_ARN`.
+4. Add the cluster name to repo Settings -> Secrets -> `EKS_CLUSTER_NAME`.
+5. If you fork or rename the repo, override `github_repo_owner` and `github_repo_name` in `terraform.tfvars`. The OIDC trust subjects are exact-match (no wildcards), so they must match exactly.
 
 ## Troubleshooting
 

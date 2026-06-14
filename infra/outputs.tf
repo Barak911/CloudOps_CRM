@@ -37,3 +37,13 @@ output "external_secrets_role_arn" {
   description = "IAM role ARN for ExternalSecrets Operator service account"
   value       = aws_iam_role.external_secrets.arn
 }
+
+output "github_actions_bootstrap_role_arn" {
+  description = "IAM role ARN for the GitHub Actions bootstrap workflow (set as repo secret AWS_BOOTSTRAP_ROLE_ARN)"
+  value       = aws_iam_role.github_actions_bootstrap.arn
+}
+
+output "github_actions_ci_role_arn" {
+  description = "IAM role ARN for the day-2 CI workflow (set as repo secret AWS_CI_ROLE_ARN)"
+  value       = aws_iam_role.github_actions_ci.arn
+}

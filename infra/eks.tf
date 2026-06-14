@@ -37,8 +37,32 @@ module "eks" {
   cluster_name    = var.cluster_name
   cluster_version = var.cluster_version
 
-  # Use self-managed addons bootstrapped on nodes (simpler, avoids dependency issues)
-  bootstrap_self_managed_addons = true
+  # Managed addons. VPC CNI runs in NetworkPolicy enforcement mode so the
+  # NetworkPolicy resources in k8s/manifests/networkpolicies.yaml are real
+  # network rules, not documentation. CoreDNS and kube-proxy are pinned by
+  # the addon's "most_recent = true" — swap to a fixed version_string for
+  # production-grade upgrade control.
+  bootstrap_self_managed_addons = false
+
+  cluster_addons = {
+    vpc-cni = {
+      most_recent = true
+      # AmazonEKS_CNI_Policy is attached to the managed-node-group IAM role
+      # by default, so no IRSA role is needed here.
+      configuration_values = jsonencode({
+        enableNetworkPolicy = "true"
+        env = {
+          ENABLE_PREFIX_DELEGATION = "true"
+        }
+      })
+    }
+    coredns = {
+      most_recent = true
+    }
+    kube-proxy = {
+      most_recent = true
+    }
+  }
 
   vpc_id     = var.use_custom_vpc ? module.vpc[0].vpc_id : data.aws_vpc.default[0].id
   subnet_ids = var.use_custom_vpc ? module.vpc[0].private_subnets : data.aws_subnets.default[0].ids
@@ -63,17 +87,16 @@ module "eks" {
   # Enable cluster access management
   enable_cluster_creator_admin_permissions = true
 
-  # Grant access to additional IAM principals
+  # Grant access to additional IAM principals.
+  #
+  # Only the bootstrap role gets cluster-admin. Day-2 CI uses a separate
+  # IAM role with ECR push only (see infra/github-oidc.tf) — it has no
+  # access entry here and cannot reach the cluster API at all. ArgoCD
+  # owns all in-cluster deployment via GitOps.
   access_entries = merge(
     {
-      # GitHub Actions role — cluster-admin is required during bootstrap to create
-      # namespaces, install CRDs (e.g. ArgoCD, ExternalSecrets), and run Helm
-      # installs across multiple namespaces.  Day-2 CI does NOT need cluster
-      # access because ArgoCD handles all in-cluster deployment via GitOps.
-      # PRODUCTION NOTE: Create a separate day-2 CI role scoped only to ECR push
-      # and remove this cluster-admin grant once bootstrap is complete.
-      github_actions = {
-        principal_arn = aws_iam_role.github_actions.arn
+      github_actions_bootstrap = {
+        principal_arn = aws_iam_role.github_actions_bootstrap.arn
         type          = "STANDARD"
         policy_associations = {
           admin = {
@@ -110,5 +133,5 @@ module "eks" {
   )
 
   # Ensure IAM role is created before cluster access entries
-  depends_on = [aws_iam_role.github_actions]
+  depends_on = [aws_iam_role.github_actions_bootstrap]
 }

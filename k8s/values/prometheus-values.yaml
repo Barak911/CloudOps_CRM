@@ -25,15 +25,16 @@ prometheus:
     # Retention period (reduced to 2d due to disk space constraints)
     retention: 2d
 
-    # CRITICAL: Discover ServiceMonitors from ALL namespaces
-    # Prometheus runs in 'monitoring' namespace, CRM ServiceMonitor is in 'default' namespace
-    # Without these settings, cross-namespace discovery fails
+    # Discover ServiceMonitors / PodMonitors / PrometheusRules from ALL
+    # namespaces. The CRM ServiceMonitor and the alerting rules live in the
+    # 'crm' namespace; Prometheus runs in 'monitoring'. Without these
+    # selectors, cross-namespace discovery would fail.
     serviceMonitorSelectorNilUsesHelmValues: false
     serviceMonitorNamespaceSelector: {}
-
-    # Also discover PodMonitors from all namespaces (for future use)
     podMonitorSelectorNilUsesHelmValues: false
     podMonitorNamespaceSelector: {}
+    ruleSelectorNilUsesHelmValues: false
+    ruleNamespaceSelector: {}
 
 # Grafana configuration
 grafana:
@@ -85,7 +86,10 @@ grafana:
   # Datasources - use default configuration from chart
   # The chart automatically configures Prometheus as datasource
 
-# AlertManager configuration (minimal for cost savings)
+# Alertmanager: route by severity into distinct receivers. All receivers
+# are 'null' in this portfolio deployment (no live paging integration),
+# but the routing tree is real — swap a receiver for a Slack/PagerDuty
+# webhook in one place to go live.
 alertmanager:
   enabled: true
   alertmanagerSpec:
@@ -96,6 +100,34 @@ alertmanager:
       limits:
         cpu: 100m
         memory: 256Mi
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: default-null
+      group_by: ['alertname', 'namespace', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes:
+        - matchers:
+            - severity = page
+          receiver: pager-null
+          continue: true
+        - matchers:
+            - severity = ticket
+          receiver: ticket-null
+    receivers:
+      - name: default-null
+      - name: pager-null
+      - name: ticket-null
+    inhibit_rules:
+      # If the whole app is down, suppress per-request burn alerts.
+      - source_matchers:
+          - alertname = CRMAppDown
+        target_matchers:
+          - slo =~ "crm-app-.*"
+        equal: ['namespace']
 
 # Node exporter - monitors node metrics
 prometheus-node-exporter:
