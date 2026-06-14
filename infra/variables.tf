@@ -53,11 +53,16 @@ variable "github_bootstrap_environment" {
 }
 
 variable "cluster_endpoint_public_access_cidrs" {
-  description = "CIDRs allowed to reach the EKS public endpoint (default: open for initial bootstrap)"
+  description = "CIDRs allowed to reach the EKS public endpoint. REQUIRED — no default. Set to your VPN/office egress range (e.g. [\"203.0.113.0/24\"]) or to [\"0.0.0.0/0\"] if you knowingly want the API world-reachable."
   type        = list(string)
-  default     = ["0.0.0.0/0"]
-  # SECURITY: After bootstrap, restrict to your office/VPN CIDR in terraform.tfvars
-  # Example: ["203.0.113.0/24"] — your VPN egress range
+  # No default on purpose: forcing the operator to make an explicit
+  # choice keeps the secure-by-default posture honest. A wide-open
+  # 0.0.0.0/0 should be a conscious decision, not a silent fallback.
+
+  validation {
+    condition     = length(var.cluster_endpoint_public_access_cidrs) > 0
+    error_message = "Supply at least one CIDR. Use [\"0.0.0.0/0\"] only if you knowingly want a public EKS API endpoint."
+  }
 }
 
 variable "developer_user_arn" {
@@ -68,9 +73,9 @@ variable "developer_user_arn" {
 }
 
 variable "use_custom_vpc" {
-  description = "Create a dedicated VPC with private subnets and NAT gateway instead of using the default VPC"
+  description = "Create a dedicated VPC with private subnets + single NAT gateway. Default: true (secure-by-default). Set to false explicitly to reuse the AWS default VPC for a faster, throwaway bootstrap."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "vpc_cidr" {

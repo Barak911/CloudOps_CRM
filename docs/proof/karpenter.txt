@@ -1,0 +1,17 @@
+===Karpenter nodes (live)===
+ip-172-31-24-152.ec2.internal   Ready   <none>   130m   v1.31.14-eks-3385e9b                              t3a.medium   us-east-1a
+ip-172-31-45-216.ec2.internal   Ready   <none>   22s    v1.31.14-eks-3385e9b   karpenter-default   spot   c7a.medium   us-east-1b
+ip-172-31-6-80.ec2.internal     Ready   <none>   130m   v1.31.14-eks-3385e9b                              t3a.medium   us-east-1c
+ip-172-31-66-79.ec2.internal    Ready   <none>   130m   v1.31.14-eks-3385e9b                              t3a.medium   us-east-1f
+
+===NodeClaims===
+NAME            TYPE         CAPACITY   ZONE         NODE                            READY     AGE
+default-fgzjn   c7a.medium   spot       us-east-1b   ip-172-31-45-216.ec2.internal   True      14m
+default-htflz                                                                        Unknown   14m
+
+===NodePool / EC2NodeClass===
+NAME                            NODECLASS   NODES   READY   AGE
+nodepool.karpenter.sh/default   default     0       True    46m
+
+NAME                                     READY   AGE
+ec2nodeclass.karpenter.k8s.aws/default   True    46m

@@ -14,7 +14,10 @@ spec:
     targetRevision: main
     path: k8s/manifests
     directory:
-      exclude: 'external-secrets.yaml'
+      # external-secrets is bootstrap-only (rendered via envsubst before ESO
+      # is ready to consume it). karpenter-nodepool needs the Karpenter CRDs
+      # to exist first, so it is also bootstrap-time imperative.
+      exclude: '{external-secrets.yaml,karpenter-nodepool.yaml}'
   destination:
     server: https://kubernetes.default.svc
   syncPolicy:

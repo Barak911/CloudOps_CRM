@@ -12,10 +12,28 @@
 # GitHub username or org (used for OIDC trust policy)
 github_repo_owner = "<your-github-username>"
 
-# IAM ARN for kubectl access (your AWS user or role)
-developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
+# CIDRs allowed to reach the EKS public API endpoint.
+# REQUIRED — there is intentionally no default, so a wide-open API
+# is a conscious choice and not a silent fallback. Set to your VPN
+# or office egress range, e.g. ["203.0.113.0/24"].
+# Use ["0.0.0.0/0"] ONLY if you knowingly want a public API endpoint
+# (e.g. for a throwaway demo cluster — combine with the IAM access
+# entries already created in eks.tf to keep authn tight).
+cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]
 
 # ── Optional (defaults shown) ────────────────────────────────
+
+# IAM ARN for kubectl access (your AWS user or role).
+# Defaults to empty: the cluster creator already gets admin via
+# enable_cluster_creator_admin_permissions, so this is only needed
+# when a different principal needs view/edit on specific namespaces.
+# developer_user_arn = "arn:aws:iam::<ACCOUNT_ID>:user/<username>"
+
+# Networking. Default = true (custom VPC with private subnets + NAT).
+# Set to false to reuse the AWS default VPC — faster bootstrap, but
+# nodes get public IPs and the security posture is meaningfully worse.
+# use_custom_vpc = true
+# vpc_cidr       = "10.0.0.0/16"
 
 # aws_region         = "us-east-1"
 # cluster_name       = "cloudops-eks-cluster"

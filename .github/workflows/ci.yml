@@ -14,6 +14,14 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   ECR_REPOSITORY: crm-app
 
+# Serialize concurrent runs of this workflow on main. Without this, two
+# pushes landing close together each try to `git push` an image-state
+# update and the second fails the lease-style rebase. With cancel-in-progress:
+# false, runs queue and the most recent commit always wins cleanly.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Detect which parts of the repo changed
   changes:
@@ -281,39 +289,43 @@ jobs:
             --type spdxjson "$IMAGE_REF"
           echo "SBOM attestation pushed for $IMAGE_REF"
 
-      # Stage 10: Update values.yaml with the new tag + digest for ArgoCD.
-      # ArgoCD picks up the change and reconciles; the deployment pulls by
-      # digest, so the tag is informational only.
-      - name: Update image tag + digest for ArgoCD
+      # Stage 10: Write the new tag + digest into the CI-owned state file
+      # k8s/values/image-state.yaml. ArgoCD layers this on top of the
+      # umbrella values.yaml via multi-source helm.valueFiles. The deployment
+      # pulls by digest; the tag is informational.
+      #
+      # Why a dedicated file: the umbrella values.yaml has tag: lines for
+      # mongodb and fluentd too. Editing those by regex was brittle. The
+      # state file contains nothing else, so the write is unambiguous.
+      - name: Update image-state.yaml for ArgoCD
         env:
           IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
           IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          python3 - <<EOF
-          import re, pathlib
-          p = pathlib.Path("k8s/crm-stack/values.yaml")
-          text = p.read_text()
-          # Anchor under the "crm-app:" top-level key (first image: block).
-          # Replace ONLY the first occurrences of tag: / digest: / repository:
-          # within ~30 lines after "crm-app:".
-          def replace_first(pattern, repl, t):
-              return re.sub(pattern, repl, t, count=1, flags=re.MULTILINE)
-          # repository (only if placeholder is still present)
-          text = text.replace(
-              "REPLACE_WITH_ECR_URL/crm-app",
-              "$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}",
-          )
-          text = replace_first(r'^(\s*)tag:\s*".*"', r'\1tag: "$IMAGE_TAG"', text)
-          text = replace_first(r'^(\s*)digest:\s*".*"', r'\1digest: "$IMAGE_DIGEST"', text)
-          p.write_text(text)
-          print("Updated values.yaml")
+          cat > k8s/values/image-state.yaml <<EOF
+          # CI-owned image state for crm-app. Written by .github/workflows/ci.yml
+          # on every successful build. Do not hand-edit.
+          crm-app:
+            image:
+              tag: "$IMAGE_TAG"
+              digest: "$IMAGE_DIGEST"
           EOF
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add k8s/crm-stack/values.yaml
+          git add k8s/values/image-state.yaml
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "ci: bump crm-app to $IMAGE_TAG ($IMAGE_DIGEST) [skip ci]"
-          git pull --rebase origin main
-          git push
+          git commit -m "ci(state): crm-app -> $IMAGE_TAG ($IMAGE_DIGEST) [skip ci]"
+          # With workflow concurrency above, two CI runs are serialized, so a
+          # rebase race is not expected. Still: handle the (rare) case where
+          # someone landed an unrelated push between checkout and here.
+          for i in 1 2 3; do
+            if git pull --rebase --autostash origin main && git push; then
+              echo "image-state pushed"
+              exit 0
+            fi
+            echo "push failed (attempt $i), retrying..."
+            sleep $((i * 5))
+          done
+          echo "Could not push image-state after retries"
+          exit 1

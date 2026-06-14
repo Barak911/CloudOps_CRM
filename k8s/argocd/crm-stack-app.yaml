@@ -1,5 +1,11 @@
 # ArgoCD Application: CRM Umbrella Chart (crm-app + mongodb + EFK)
-# CI pipeline auto-updates image.tag in k8s/crm-stack/values.yaml
+#
+# Image state is segregated: CI only touches k8s/values/image-state.yaml,
+# never the umbrella values.yaml. This way the only file that changes from
+# a `[skip ci]` bot commit is a clearly-CI-owned state file; review of
+# the umbrella values.yaml stays clean of release noise, and the sed/regex
+# editing has nothing else in the file to clobber.
+#
 # Multi-source: local Helm chart + separate values ref (consistent with other apps)
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -17,6 +23,9 @@ spec:
       helm:
         valueFiles:
           - $values/k8s/values/values-ingress.yaml
+          # CI-owned image state. Overrides crm-app.image fields from the
+          # umbrella values.yaml.
+          - $values/k8s/values/image-state.yaml
     - repoURL: https://github.com/REPLACE_OWNER/CloudOps_CRM.git
       targetRevision: main
       ref: values
