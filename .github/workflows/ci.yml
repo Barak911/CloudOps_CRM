@@ -178,7 +178,7 @@ jobs:
 
       - name: Login to Amazon ECR
         id: login-ecr
-        uses: aws-actions/amazon-ecr-login@006813a119ae0fdeb70ae00f16cda21ee6f2ff3d # v2
+        uses: aws-actions/amazon-ecr-login@c962da2960ed15f492addc26fffa274485265950 # v2
 
       - name: Check if image already exists in ECR
         id: check-image
