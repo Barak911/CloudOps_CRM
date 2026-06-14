@@ -1,5 +1,35 @@
 name: Bootstrap EKS Cluster
 
+# This workflow is INTENTIONALLY procedural and one-shot. In a real
+# multi-team org the equivalent would be an App-of-Apps root that
+# ArgoCD reconciles from t=0 (ArgoCD installs ArgoCD via a thin
+# install script + an ApplicationSet that owns the rest of the
+# platform). At this scope — single account, single cluster, single
+# developer — that abstraction would cost more than it earns: every
+# bootstrap-only piece of glue (ES credential pre-seeding, Kibana
+# service-account token minting, Karpenter helm install) would need
+# its own ArgoCD Application + sync-wave + extraction to keep the
+# bootstrap repo declarative. The honest tradeoff is to keep this
+# imperative and runnable end-to-end, and document where the line is.
+#
+# What this workflow does that ArgoCD picks up later:
+#   1. Builds + signs the application image (cosign + SBOM in ci.yml).
+#   2. Installs ArgoCD via Helm.
+#   3. Installs ExternalSecrets Operator + renders k8s/manifests/external-secrets.yaml
+#      with the current account ID / cluster / region.
+#   4. Installs cert-manager + a self-signed ClusterIssuer.
+#   5. Installs Karpenter and applies its NodePool/EC2NodeClass.
+#   6. Pre-creates Elasticsearch credentials + the Kibana service-account
+#      token (chicken-and-egg with the upstream chart's Helm pre-install
+#      hook). Runs a one-shot `helm upgrade --no-hooks` of crm-stack so
+#      Elasticsearch is reachable.
+#   7. Applies the ArgoCD Application CRDs. From here on, ArgoCD owns
+#      all reconciliation; this workflow is no longer in the path.
+#
+# Day-2 image rollouts go through ci.yml, which never touches the
+# cluster — CI signs the image, writes the new digest into
+# k8s/values/image-state.yaml, ArgoCD reconciles.
+
 on:
   workflow_dispatch:
     inputs:

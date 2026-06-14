@@ -69,7 +69,7 @@ Personal-account practicality drives a few defaults I'd flip for real production
 - **Default VPC support** — reduces setup friction. The Terraform supports a dedicated VPC with private subnets via `use_custom_vpc=true`; left off by default for runnability.
 - **Single cluster** — one EKS cluster serves everything. Separate dev / staging / prod clusters are the obvious production answer.
 - **Self-signed TLS** — cert-manager issues a working cert; browsers warn. Swap to Let's Encrypt or ACM + Route53 + a real domain for prod.
-- **Manual bootstrap workflow** — one-time imperative install of ArgoCD and ExternalSecrets Operator, after which ArgoCD adopts everything. The chicken-and-egg of "GitOps for the GitOps controller" is an honest boundary, not a gap.
+- **Manual bootstrap workflow** — one-time imperative install of ArgoCD and ExternalSecrets Operator, after which ArgoCD adopts everything. The chicken-and-egg of "GitOps for the GitOps controller" is an honest boundary, not a gap. At org scale this would become an App-of-Apps root with a thin install script; for a single-cluster, single-developer project the abstraction would cost more than it earns. The bootstrap workflow is annotated at the top with what it does and where the line is — see [.github/workflows/bootstrap-cluster.yml](.github/workflows/bootstrap-cluster.yml).
 
 ## What This Project Implements
 
