@@ -1,0 +1,5 @@
+NAME               SYNC STATUS   HEALTH STATUS
+crm-manifests      Synced        Healthy
+crm-stack          Synced        Healthy
+nginx-ingress      Synced        Healthy
+prometheus-stack   Synced        Healthy

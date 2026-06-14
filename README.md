@@ -4,6 +4,46 @@
 
 Single-developer learning project built to practice the full platform-engineering stack in one repo: Terraform infrastructure, GitHub Actions CI with AWS OIDC, ArgoCD-managed delivery, observability, and secrets management. It exercises the patterns; it is not a production deployment of them.
 
+## Proof it ran
+
+Most recent live bootstrap (clean account → working stack): [GitHub Actions run #27504415241](https://github.com/Barak911/CloudOps_CRM/actions/runs/27504415241).
+
+```text
+$ kubectl get applications -n argocd
+NAME               SYNC STATUS   HEALTH STATUS
+crm-manifests      Synced        Healthy
+crm-stack          Synced        Healthy
+nginx-ingress      Synced        Healthy
+prometheus-stack   Synced        Healthy
+
+$ kubectl get networkpolicies -A | wc -l
+14   # default-deny + explicit allows across crm + monitoring (VPC CNI enforced)
+
+# Prometheus rules loaded:
+ALERT  crm-app.slo/CRMAppErrorBudgetFastBurn       state=inactive
+ALERT  crm-app.slo/CRMAppErrorBudgetSlowBurn       state=inactive
+ALERT  crm-app.slo/CRMAppP95LatencyHigh            state=inactive
+ALERT  crm-app.slo/CRMAppDown                      state=inactive
+ALERT  crm-platform.health/KubePodCrashLooping     state=inactive
+ALERT  crm-platform.health/PVCNearFull             state=inactive
+ALERT  crm-platform.health/MongoDBDown             state=pending
+REC    crm-app.slo/job:flask_http_request:error_rate{5m,30m,1h,6h}
+
+# Live scrape targets (app actually instrumented):
+job=crm-app pod=crm-app-796f9f4c65-w8mds  health=up
+job=crm-app pod=crm-app-796f9f4c65-7h528  health=up
+
+# Workloads:
+crm         8 pods Running    # crm-app x2, mongodb, ES, kibana, fluentd x3
+monitoring  8 pods Running    # prometheus, alertmanager, grafana, kube-state, ...
+argocd      5 pods Running
+external-secrets  3 pods Running
+cert-manager  3 pods Running
+ingress-nginx 1 pod  Running
+```
+
+All workloads green on a fresh cluster brought up by the bootstrap workflow; raw captures are in [`docs/proof/`](docs/proof/).
+
 ## Scope & Intent
 
 Built to answer one question: *can I run a real-feeling delivery pipeline solo, in a single AWS account, without papering over the hard parts?*

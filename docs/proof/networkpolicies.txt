@@ -1,0 +1,12 @@
+NAMESPACE    NAME                                 POD-SELECTOR                                               AGE
+crm          allow-crm-app-egress                 app=crm-app                                                9m30s
+crm          allow-crm-app-ingress                app=crm-app                                                9m30s
+crm          allow-dns-egress                     <none>                                                     9m30s
+crm          allow-elasticsearch-ingress          app=elasticsearch-master                                   9m30s
+crm          allow-fluentd-kibana-es-egress       app.kubernetes.io/name in (elasticsearch,fluentd,kibana)   9m30s
+crm          allow-kibana-ingress                 app=kibana                                                 9m30s
+crm          allow-mongodb-ingress                app=mongodb                                                9m30s
+crm          default-deny-all                     <none>                                                     9m30s
+monitoring   allow-alertmanager-from-prometheus   app.kubernetes.io/name=alertmanager                        9m30s
+monitoring   allow-grafana-from-ingress           app.kubernetes.io/name=grafana                             9m30s
+monitoring   default-deny-ingress                 <none>                                                     9m30s
