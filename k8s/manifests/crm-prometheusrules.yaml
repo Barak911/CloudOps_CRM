@@ -57,7 +57,7 @@ spec:
             description: |
               5m + 1h error rate both > 14.4x budget burn.
               At this pace the 30d budget is exhausted in <2 days.
-              5m rate: {{ printf "%.2f%%" (mul $value 100) }}
+              Current rate: {{ $value | humanizePercentage }}
             runbook_url: https://github.com/Barak911/CloudOps_CRM/blob/main/docs/runbooks/crm-app.md
 
         - alert: CRMAppErrorBudgetSlowBurn
@@ -132,7 +132,7 @@ spec:
             severity: ticket
           annotations:
             summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} > 85% full"
-            description: "Used {{ printf \"%.0f%%\" (mul $value 100) }} of capacity."
+            description: "Used {{ $value | humanizePercentage }} of capacity."
 
         - alert: MongoDBDown
           expr: |
