@@ -137,8 +137,31 @@ spec:
       ports:
         - protocol: TCP
           port: 27017
-    # Replica set peer traffic (matters once #5 lands; harmless beforehand)
+    # Replica-set peer traffic + init Job (Job pod inherits app=mongodb)
     - from:
+        - podSelector:
+            matchLabels:
+              app: mongodb
+      ports:
+        - protocol: TCP
+          port: 27017
+---
+# mongodb pods need egress to: each other (replica-set replication) and the
+# K8s API (rare; the init Job uses mongosh only, but readiness probes via
+# kubelet bypass NetworkPolicy entirely). The Job pod also inherits
+# app=mongodb and uses this rule to reach pod-0/-1/-2 for rs.initiate.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mongodb-egress
+  namespace: crm
+spec:
+  podSelector:
+    matchLabels:
+      app: mongodb
+  policyTypes: [Egress]
+  egress:
+    - to:
         - podSelector:
             matchLabels:
               app: mongodb

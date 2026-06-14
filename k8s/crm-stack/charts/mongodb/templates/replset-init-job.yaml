@@ -11,11 +11,16 @@ metadata:
   labels:
     {{- include "mongodb.labels" . | nindent 4 }}
   annotations:
-    # PostInstall + PostUpgrade so it runs on first sync and on re-deploys
-    # (idempotent — guards against rs.initiate twice).
+    # Helm hooks for `helm install/upgrade` (used by the bootstrap
+    # workflow's imperative install) AND ArgoCD-native PostSync hook
+    # (used during day-2 GitOps reconcile). Two annotation flavors so
+    # the Job actually fires in both paths — Helm hooks alone are
+    # invisible to ArgoCD.
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-weight": "5"
     "helm.sh/hook-delete-policy": before-hook-creation
+    "argocd.argoproj.io/hook": PostSync
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
 spec:
   backoffLimit: 6
   ttlSecondsAfterFinished: 600
@@ -90,7 +95,15 @@ spec:
                 echo "Replica set already initialized; skipping rs.initiate()."
               else
                 echo "Initiating replica set $RS_NAME..."
-                mongosh --quiet --host "$MEMBER_0:27017" --eval "
+                # mongod runs with --auth --keyFile, so rs.initiate needs
+                # the same root credentials as the rest of the script. The
+                # admin user is created by docker-entrypoint on first start
+                # from MONGO_INITDB_ROOT_USERNAME/PASSWORD, which also runs
+                # before --auth is enforced for the bootstrap window.
+                mongosh --quiet --host "$MEMBER_0:27017" \
+                  -u "$MONGO_ROOT_USERNAME" -p "$MONGO_ROOT_PASSWORD" \
+                  --authenticationDatabase admin \
+                  --eval "
                   rs.initiate({
                     _id: '$RS_NAME',
                     members: [

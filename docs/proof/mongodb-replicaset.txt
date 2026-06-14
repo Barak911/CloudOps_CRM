@@ -1,0 +1,8 @@
+=== MongoDB ReplicaSet members ===
+mongodb-0    Running 25m                        ago)
+mongodb-1    Running ip-172-31-66-79.ec2.internal 172.31.73.248
+mongodb-2    Running ip-172-31-24-152.ec2.internal 172.31.31.52
+
+=== Pods spread across 3 distinct nodes (anti-affinity) ===
+       3
+=== Replica set state via mongosh from PRIMARY ===
