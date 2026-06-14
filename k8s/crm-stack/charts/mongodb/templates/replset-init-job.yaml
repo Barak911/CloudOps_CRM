@@ -1,0 +1,140 @@
+{{- if .Values.replicaSet.enabled -}}
+# rs.initiate() + create the application user. Runs as a Helm post-install
+# / post-upgrade hook so it fires AFTER the StatefulSet pods exist. The
+# job is idempotent: rs.status() check short-circuits if the set is
+# already initialized.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mongodb.fullname" . }}-replset-init
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+  annotations:
+    # PostInstall + PostUpgrade so it runs on first sync and on re-deploys
+    # (idempotent — guards against rs.initiate twice).
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "mongodb.selectorLabels" . | nindent 8 }}
+        job: replset-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          env:
+            - name: MONGO_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
+                  key: username
+            - name: MONGO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
+                  key: password
+            - name: APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-app-credentials
+                  key: username
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-app-credentials
+                  key: password
+            - name: APP_DATABASE
+              value: {{ .Values.global.mongodb.database | quote }}
+            - name: RS_NAME
+              value: {{ .Values.replicaSet.name | quote }}
+            - name: MEMBER_0
+              value: "{{ include "mongodb.fullname" . }}-0.{{ include "mongodb.fullname" . }}.{{ .Values.global.namespace }}.svc.cluster.local"
+            - name: MEMBER_1
+              value: "{{ include "mongodb.fullname" . }}-1.{{ include "mongodb.fullname" . }}.{{ .Values.global.namespace }}.svc.cluster.local"
+            - name: MEMBER_2
+              value: "{{ include "mongodb.fullname" . }}-2.{{ include "mongodb.fullname" . }}.{{ .Values.global.namespace }}.svc.cluster.local"
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+
+              # Wait for pod-0 to be reachable on the wire. mongod started
+              # with --auth + --replSet rejects authenticated commands until
+              # rs.initiate(), but accepts unauthenticated localhost-style
+              # ping during the bootstrap window. Try both: either response
+              # means "TCP up, mongod ready for the next step."
+              echo "Waiting for pod-0 to be reachable..."
+              until mongosh --quiet --host "$MEMBER_0:27017" --eval "db.adminCommand('ping')" >/dev/null 2>&1 \
+                 || mongosh --quiet --host "$MEMBER_0:27017" \
+                       -u "$MONGO_ROOT_USERNAME" -p "$MONGO_ROOT_PASSWORD" \
+                       --authenticationDatabase admin \
+                       --eval "db.adminCommand('ping')" >/dev/null 2>&1; do
+                sleep 3
+              done
+
+              # First-time init vs. already-initialized check.
+              RS_STATUS=$(mongosh --quiet --host "$MEMBER_0:27017" \
+                -u "$MONGO_ROOT_USERNAME" -p "$MONGO_ROOT_PASSWORD" \
+                --authenticationDatabase admin \
+                --eval "JSON.stringify(rs.status())" 2>/dev/null || echo "{}")
+
+              if echo "$RS_STATUS" | grep -q '"ok":1'; then
+                echo "Replica set already initialized; skipping rs.initiate()."
+              else
+                echo "Initiating replica set $RS_NAME..."
+                mongosh --quiet --host "$MEMBER_0:27017" --eval "
+                  rs.initiate({
+                    _id: '$RS_NAME',
+                    members: [
+                      { _id: 0, host: '$MEMBER_0:27017', priority: 2 },
+                      { _id: 1, host: '$MEMBER_1:27017', priority: 1 },
+                      { _id: 2, host: '$MEMBER_2:27017', priority: 1 }
+                    ]
+                  })
+                "
+                echo "Waiting for PRIMARY election..."
+                until mongosh --quiet --host "$MEMBER_0:27017" \
+                    -u "$MONGO_ROOT_USERNAME" -p "$MONGO_ROOT_PASSWORD" \
+                    --authenticationDatabase admin \
+                    --eval "rs.status().members.some(m => m.stateStr === 'PRIMARY')" \
+                    | grep -q true; do
+                  sleep 3
+                done
+                echo "PRIMARY elected."
+              fi
+
+              # App-user provisioning (idempotent — createUser fails with a
+              # specific code if the user already exists; we swallow that).
+              echo "Provisioning application user '$APP_USERNAME' on $APP_DATABASE..."
+              mongosh --quiet --host "$MEMBER_0:27017" \
+                -u "$MONGO_ROOT_USERNAME" -p "$MONGO_ROOT_PASSWORD" \
+                --authenticationDatabase admin \
+                --eval "
+                  db = db.getSiblingDB('$APP_DATABASE');
+                  try {
+                    db.createUser({
+                      user: '$APP_USERNAME',
+                      pwd: '$APP_PASSWORD',
+                      roles: [{ role: 'readWrite', db: '$APP_DATABASE' }]
+                    });
+                    print('App user created');
+                  } catch (e) {
+                    if (e.codeName === 'DuplicateKey' || /already exists/i.test(e.message)) {
+                      print('App user already exists — updating password');
+                      db.updateUser('$APP_USERNAME', { pwd: '$APP_PASSWORD' });
+                    } else {
+                      throw e;
+                    }
+                  }
+                "
+
+              echo "Replica set bootstrap complete."
+{{- end }}

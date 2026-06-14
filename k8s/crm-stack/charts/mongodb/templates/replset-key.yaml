@@ -1,0 +1,17 @@
+{{- if .Values.replicaSet.enabled -}}
+# Shared keyfile mongod uses to authenticate replica-set members to each
+# other. randAlphaNum is regenerated on every helm template run, so the
+# crm-stack ArgoCD Application's ignoreDifferences list MUST cover this
+# Secret (same as it does for elasticsearch-master-credentials) — otherwise
+# every sync would rotate the key and roll the StatefulSet.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "mongodb.fullname" . }}-replset-key
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  keyfile: {{ randAlphaNum 756 | b64enc | quote }}
+{{- end }}

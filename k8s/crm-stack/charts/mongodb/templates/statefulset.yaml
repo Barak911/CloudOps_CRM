@@ -7,7 +7,8 @@ metadata:
     {{- include "mongodb.labels" . | nindent 4 }}
 spec:
   serviceName: {{ include "mongodb.fullname" . }}
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ if .Values.replicaSet.enabled }}3{{ else }}{{ .Values.replicaCount }}{{ end }}
+  podManagementPolicy: {{ if .Values.replicaSet.enabled }}Parallel{{ else }}OrderedReady{{ end }}
   selector:
     matchLabels:
       {{- include "mongodb.selectorLabels" . | nindent 6 }}
@@ -19,95 +20,161 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      {{- if .Values.replicaSet.enabled }}
+      # Spread replicas across topology domains. Soft preference so the
+      # pod can still schedule on a single-AZ cluster (e.g. demo runs);
+      # in production with 3+ AZs the scheduler honors this naturally.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: {{ .Values.replicaSet.topologyKey | quote }}
+                labelSelector:
+                  matchLabels:
+                    {{- include "mongodb.selectorLabels" . | nindent 20 }}
+      {{- end }}
       securityContext:
         fsGroup: 999
-      containers:
-      - name: {{ .Chart.Name }}
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-        imagePullPolicy: {{ .Values.image.pullPolicy }}
-        securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop: ["ALL"]
-            add: ["CHOWN", "SETUID", "SETGID"]
-        ports:
-        - containerPort: {{ .Values.service.port }}
-          name: mongodb
-          protocol: TCP
-        env:
-        - name: MONGO_INITDB_DATABASE
-          value: "{{ .Values.global.mongodb.database }}"
-        {{- if .Values.auth.enabled }}
-        - name: MONGO_INITDB_ROOT_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
-              key: username
-        - name: MONGO_INITDB_ROOT_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
-              key: password
-        - name: MONGO_APP_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: mongodb-app-credentials
-              key: username
-              optional: true
-        - name: MONGO_APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: mongodb-app-credentials
-              key: password
-              optional: true
-        {{- end }}
-        resources:
-          {{- toYaml .Values.resources | nindent 10 }}
-        {{- if .Values.persistence.enabled }}
-        volumeMounts:
-        - name: {{ include "mongodb.fullname" . }}-data
-          mountPath: /data/db
-        {{- if .Values.auth.enabled }}
-        - name: initdb-scripts
-          mountPath: /docker-entrypoint-initdb.d
-          readOnly: true
-        {{- end }}
-        {{- end }}
-        {{- if .Values.healthCheck.enabled }}
-        livenessProbe:
-          exec:
-            command:
-            - mongosh
-            - --eval
-            - "db.adminCommand('ping')"
-          initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
-          periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
-          timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
-          failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
-        readinessProbe:
-          exec:
-            command:
-            - mongosh
-            - --eval
-            - "db.adminCommand('ping')"
-          initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
-          periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
-          timeoutSeconds: {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
-        {{- end }}
-      {{- if .Values.auth.enabled }}
-      volumes:
-      - name: initdb-scripts
-        configMap:
-          name: {{ include "mongodb.fullname" . }}-initdb
+      {{- if .Values.replicaSet.enabled }}
+      # The Secret's keyFile entry needs mode 0400 owned by the mongodb
+      # user (999). Without this initContainer mongod refuses to start
+      # ("permissions on /etc/mongodb-keyfile are too open").
+      initContainers:
+        - name: keyfile-perms
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command:
+            - sh
+            - -c
+            - |
+              cp /keyfile-raw/keyfile /keyfile/keyfile
+              chmod 400 /keyfile/keyfile
+              chown 999:999 /keyfile/keyfile
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER"]
+          volumeMounts:
+            - name: keyfile-raw
+              mountPath: /keyfile-raw
+              readOnly: true
+            - name: keyfile
+              mountPath: /keyfile
       {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "SETUID", "SETGID"]
+          {{- if .Values.replicaSet.enabled }}
+          args:
+            - "--bind_ip_all"
+            - "--replSet={{ .Values.replicaSet.name }}"
+            - "--auth"
+            - "--keyFile=/etc/mongodb-keyfile/keyfile"
+          {{- end }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: mongodb
+              protocol: TCP
+          env:
+            - name: MONGO_INITDB_DATABASE
+              value: "{{ .Values.global.mongodb.database }}"
+            {{- if .Values.auth.enabled }}
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
+                  key: username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.existingSecret | default (printf "%s-credentials" (include "mongodb.fullname" .)) }}
+                  key: password
+            {{- if not .Values.replicaSet.enabled }}
+            # In single-node mode the official mongo image runs
+            # /docker-entrypoint-initdb.d on first boot to create the app
+            # user. In replica-set mode the init Job does that instead,
+            # after rs.initiate() lands.
+            - name: MONGO_APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-app-credentials
+                  key: username
+                  optional: true
+            - name: MONGO_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongodb-app-credentials
+                  key: password
+                  optional: true
+            {{- end }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: {{ include "mongodb.fullname" . }}-data
+              mountPath: /data/db
+            {{- end }}
+            {{- if and .Values.auth.enabled (not .Values.replicaSet.enabled) }}
+            - name: initdb-scripts
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            {{- end }}
+            {{- if .Values.replicaSet.enabled }}
+            - name: keyfile
+              mountPath: /etc/mongodb-keyfile
+              readOnly: true
+            {{- end }}
+          {{- if .Values.healthCheck.enabled }}
+          livenessProbe:
+            exec:
+              command:
+                - mongosh
+                - --eval
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: {{ .Values.healthCheck.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.livenessProbe.failureThreshold }}
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --eval
+                - "db.adminCommand('ping')"
+            initialDelaySeconds: {{ .Values.healthCheck.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.readinessProbe.timeoutSeconds }}
+          {{- end }}
+      volumes:
+        {{- if and .Values.auth.enabled (not .Values.replicaSet.enabled) }}
+        - name: initdb-scripts
+          configMap:
+            name: {{ include "mongodb.fullname" . }}-initdb
+        {{- end }}
+        {{- if .Values.replicaSet.enabled }}
+        - name: keyfile-raw
+          secret:
+            secretName: {{ include "mongodb.fullname" . }}-replset-key
+            defaultMode: 0400
+        - name: keyfile
+          emptyDir: {}
+        {{- end }}
   {{- if .Values.persistence.enabled }}
   volumeClaimTemplates:
-  - metadata:
-      name: {{ include "mongodb.fullname" . }}-data
-    spec:
-      accessModes:
-      - {{ .Values.persistence.accessMode }}
-      resources:
-        requests:
-          storage: {{ .Values.persistence.size }}
+    - metadata:
+        name: {{ include "mongodb.fullname" . }}-data
+      spec:
+        accessModes:
+          - {{ .Values.persistence.accessMode }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
   {{- end }}

@@ -46,6 +46,13 @@ spec:
       name: elasticsearch-master-certs
       jsonPointers:
         - /data
+    # MongoDB replica-set keyfile uses randAlphaNum; ignore so ArgoCD
+    # doesn't rotate the key (which would roll the StatefulSet) on sync.
+    - group: ""
+      kind: Secret
+      name: mongodb-replset-key
+      jsonPointers:
+        - /data
     # StatefulSet volumeClaimTemplates are immutable after creation;
     # live state includes extra fields (apiVersion, kind) not in the template
     - group: apps

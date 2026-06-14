@@ -57,7 +57,14 @@ spec:
               name: mongodb-app-credentials
               key: password
         - name: MONGO_URI
+          {{- if .Values.global.mongodb.replicaSet.enabled }}
+          # Multi-host URI: PyMongo connects to any one member, learns the
+          # rest via isMaster, and routes writes to the PRIMARY automatically.
+          # On PRIMARY failover the driver re-discovers within seconds.
+          value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ .Values.global.mongodb.host }}-0.{{ .Values.global.mongodb.host }}.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.mongodb.port }},{{ .Values.global.mongodb.host }}-1.{{ .Values.global.mongodb.host }}.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.mongodb.port }},{{ .Values.global.mongodb.host }}-2.{{ .Values.global.mongodb.host }}.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.mongodb.port }}/{{ .Values.global.mongodb.database }}?authSource={{ .Values.global.mongodb.database }}&replicaSet={{ .Values.global.mongodb.replicaSet.name }}"
+          {{- else }}
           value: "mongodb://$(MONGO_USERNAME):$(MONGO_PASSWORD)@{{ .Values.global.mongodb.host }}.{{ .Values.global.namespace }}.svc.cluster.local:{{ .Values.global.mongodb.port }}/{{ .Values.global.mongodb.database }}?authSource={{ .Values.global.mongodb.database }}"
+          {{- end }}
         - name: PORT
           value: "{{ .Values.service.targetPort }}"
         - name: ENVIRONMENT

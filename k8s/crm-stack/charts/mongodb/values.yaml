@@ -1,6 +1,19 @@
 # Default values for mongodb.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+#
+# This chart supports two modes:
+#
+#   replicaSet.enabled: false  (default in development)
+#     Single-node StatefulSet, no replica-set protocol. Cheap, fast,
+#     fine for `helm template` smoke tests.
+#
+#   replicaSet.enabled: true   (default in the umbrella values)
+#     3-member replica set with pod anti-affinity across AZs, a
+#     pre-shared keyfile for inter-node auth, and an init Job that
+#     calls rs.initiate() + provisions the application user.
+#
+# In replica-set mode the app connection string switches from
+# mongodb://host:27017/db to a multi-host URI with ?replicaSet=rs0,
+# so failovers route automatically.
 
 replicaCount: 1
 
@@ -13,6 +26,14 @@ service:
   type: ClusterIP
   port: 27017
   headless: true
+
+# ----- HA mode -----
+replicaSet:
+  enabled: false
+  name: rs0
+  # podAntiAffinity scope: zone is the right default for cost; if you
+  # also want anti-affinity at the node level, tighten to hostname.
+  topologyKey: topology.kubernetes.io/zone
 
 persistence:
   enabled: true

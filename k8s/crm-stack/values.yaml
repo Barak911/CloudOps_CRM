@@ -8,11 +8,16 @@ global:
     project: crm
     managed-by: helm
 
-  # MongoDB connection details
+  # MongoDB connection details. When replicaSet.enabled, the crm-app
+  # connection string switches to a multi-host URI with ?replicaSet=rs0
+  # so PyMongo discovers the topology and reroutes on failover.
   mongodb:
     host: mongodb
     port: 27017
     database: crm_db
+    replicaSet:
+      enabled: true
+      name: rs0
 
 # CRM Application configuration
 crm-app:
@@ -59,7 +64,18 @@ crm-app:
 # MongoDB configuration
 mongodb:
   enabled: true
+  # replicaCount is ignored when replicaSet.enabled (StatefulSet pins to 3
+  # so the rs.initiate() job has predictable peer FQDNs).
   replicaCount: 1
+
+  # HA replica set: 3-member StatefulSet across AZs, pre-shared keyFile
+  # for inter-node auth, helm post-install/upgrade Job that calls
+  # rs.initiate() + provisions the app user. crm-app connection string
+  # switches to a multi-host URI with replicaSet=rs0 automatically.
+  replicaSet:
+    enabled: true
+    name: rs0
+    topologyKey: topology.kubernetes.io/zone
 
   image:
     repository: mongo
