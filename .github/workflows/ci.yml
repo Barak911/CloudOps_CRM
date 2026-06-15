@@ -9,6 +9,11 @@ on:
       - 'k8s/**'
       - 'infra/**'
       - '.github/workflows/ci.yml'
+  # Manual trigger so we can rebuild + republish an image after a teardown
+  # without making a token edit to app/. Same role assumption (env:production
+  # is NOT required because this workflow uses AWS_CI_ROLE_ARN, which is
+  # already trust-pinned to refs/heads/main).
+  workflow_dispatch:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
