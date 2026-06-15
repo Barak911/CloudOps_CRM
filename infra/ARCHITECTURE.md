@@ -9,7 +9,7 @@ CloudOps_CRM/
 ├── app/          # Flask REST API + tests + Dockerfile
 ├── k8s/          # Helm charts, ArgoCD Applications, manifests
 │   ├── crm-stack/    # Umbrella chart (CRM + MongoDB ReplicaSet + EFK)
-│   ├── argocd/       # ArgoCD Application CRDs (multi-source)
+│   ├── argocd/       # Root App-of-Apps + child Applications
 │   ├── manifests/    # Plain K8s resources:
 │   │                 #   Ingress, ServiceMonitor, PrometheusRule,
 │   │                 #   NetworkPolicies, Karpenter NodePool/EC2NodeClass,
@@ -50,12 +50,12 @@ CloudOps_CRM/
 **Components:**
 - Nginx Ingress Controller — single NLB entry point (two replicas for HA)
 - CRM App — Flask REST API (ClusterIP), instrumented for Prometheus + JSON logs
-- MongoDB — 3-member StatefulSet with replica set `rs0`, pod anti-affinity by AZ, pre-shared keyfile, rs.initiate via idempotent Helm/ArgoCD-hook Job
+- MongoDB — 3-member StatefulSet with replica set `rs0`, pod anti-affinity by AZ, pre-shared keyfile, rs.initiate via idempotent ArgoCD Sync-hook Job (wave 0, internal polling loop replaces sync-wave ordering)
 - Elasticsearch — HTTPS, 5Gi EBS
 - Kibana — log visualization via Ingress
 - Fluentd — log collection DaemonSet
 - Prometheus / Grafana / Alertmanager — `monitoring` namespace; Alertmanager has a real routing tree (severity → receiver, inhibit rules) with null receivers
-- ArgoCD — GitOps deployment controller, multi-source Application
+- ArgoCD — GitOps deployment controller; root App-of-Apps spawns crm-stack (single-source), crm-manifests (single-source), prometheus-stack (multi-source: external chart + local overlay)
 - Karpenter — `karpenter` namespace; NodePool + EC2NodeClass; spot-first AL2023, IMDSv2-only
 - ExternalSecrets Operator — `external-secrets` namespace; IRSA-backed Secrets Manager sync
 - cert-manager — `cert-manager` namespace; self-signed ClusterIssuer
@@ -98,7 +98,7 @@ AWS Account
 | Workflow | Trigger | Role assumed | Purpose |
 |----------|---------|--------------|---------|
 | `ci.yml` | Push to main (path: `app/**`, `k8s/**`, `infra/**`) | `AWS_CI_ROLE_ARN` (ECR push only) | Build, test, scan, push to ECR, **cosign sign + SBOM attest**, update `image-state.yaml` |
-| `bootstrap-cluster.yml` | Manual `workflow_dispatch` | `AWS_BOOTSTRAP_ROLE_ARN` (cluster-admin, env-gated) | One-time EKS cluster bootstrap, ArgoCD takeover |
+| `bootstrap-cluster.yml` | Manual `workflow_dispatch` | `AWS_BOOTSTRAP_ROLE_ARN` (cluster-admin, env-gated) | Verify Terraform's bootstrap landed; seed Elasticsearch index template + ingest pipeline; run integration tests |
 | `cleanup-deployment.yml` | Manual `workflow_dispatch` | `AWS_BOOTSTRAP_ROLE_ARN` | Teardown ArgoCD + Helm + K8s resources, verify AWS cleanup |
 
 ### GitOps Flow (ci.yml)
@@ -111,18 +111,51 @@ Write tag + digest to k8s/values/image-state.yaml [skip ci] ->
 ArgoCD detects change -> Pulls image by @sha256: digest
 ```
 
-### Bootstrap Flow (bootstrap-cluster.yml)
+### Bootstrap Flow (`terraform apply`)
+
+The platform is brought up by Terraform in one shot — no procedural shell scripts, no `helm install` lines in a workflow. The substrate charts (ArgoCD, ExternalSecrets, cert-manager, Karpenter, nginx-ingress) are `helm_release` resources, and the three chicken-and-egg manifests that bootstrap GitOps (crm namespace, AWS SecretStore binding, root App-of-Apps) are `kubectl_manifest` resources.
 
 ```
-Build + Push to ECR -> Install ArgoCD -> Install ExternalSecrets ->
-Install cert-manager + self-signed ClusterIssuer ->
-Install Karpenter (helm) + apply NodePool/EC2NodeClass ->
-Pre-create ES + Kibana secrets (helm --no-hooks bootstrap of crm-stack) ->
-Apply ArgoCD Application CRDs -> Wait for Sync+Healthy ->
-Run integration tests (CRM API + observability)
+terraform apply
+  └─ EKS cluster + VPC + IAM/OIDC + ECR + Secrets Manager + Karpenter infra
+  └─ Helm releases (wait=false): nginx-ingress, ArgoCD, ExternalSecrets,
+                                 cert-manager + ClusterIssuer, Karpenter
+  └─ Wait Jobs (in-cluster `kubectl wait`) gate the dependents
+  └─ Chicken-and-egg manifests: crm namespace, AWS SecretStore, root App
+  └─ ArgoCD picks up root App, syncs crm-stack + crm-manifests + monitoring
+  └─ Inside crm-stack: mongodb-replset-init Sync hook fires `rs.initiate()`
+     and provisions the app user (idempotent)
+
+bootstrap-cluster.yml (manual, post-apply)
+  └─ Confirms ArgoCD root + children are Synced + Healthy
+  └─ Seeds Elasticsearch logs-* index template + ingest pipeline
+  └─ Runs CRM API + observability integration tests
 ```
 
-The bootstrap workflow is intentionally procedural and one-shot; see the comment block at the top of `bootstrap-cluster.yml` for what it does and where the line is between bootstrap glue and platform that ArgoCD owns from t=0.
+#### Wait-Job pattern (out-of-process readiness barrier)
+
+`helm_release { wait = true }` blocks INSIDE the terraform process and holds the state lock for the entire wait window. Across 5 substrate charts that's 15+ minutes of held lock — a single SIGKILL or network blip leaves a stale lock that needs manual `terraform force-unlock` recovery (real risk on a flaky laptop network — see [Flaky-network resilience](#flaky-network-resilience)).
+
+With `wait = false` + a `kubernetes_job_v1` running `kubectl wait --for=condition=Available ...` in-cluster, each helm_release returns in seconds; the blocking work moves to Job resources whose readiness check runs *in-cluster*. The terraform state lock is held only briefly per resource.
+
+```
+helm_release.argocd  (wait=false, returns in ~10s)
+        │
+        ▼
+kubernetes_job_v1.argocd_ready    ──── runs in-cluster ────►  argocd-server
+   (kubectl wait --for=condition=Available deployment/argocd-server)         │
+        │                                                                    │
+        ▼ Job Succeeded ───── terraform unblocks ◄───────────  Available     ┘
+        │
+        ▼
+kubectl_manifest.argocd_root_app  (depends_on the wait Job, not the helm release)
+```
+
+The pattern is from `lablabs/terraform-aws-eks-universal-addon` and is the convention modern eks-addon Terraform modules converge on. Implementation lives in `infra/wait_gates.tf` (shared SA + ClusterRole + Binding) and `infra/helm_releases.tf` (one Job per release).
+
+#### Flaky-network resilience
+
+The wait-Job refactor is what makes `terraform apply` from a laptop with intermittent WiFi safe. The terraform process is no longer parked on a 15-minute wait — it returns in seconds, the readiness check continues in-cluster, and on the next `apply` the Job is idempotent (terraform sees it Succeeded and moves on). Combined with `TF_REGISTRY_DISCOVERY_RETRY=10` + `TF_PLUGIN_CACHE_DIR` for the Terraform Registry's intermittent rate-limiting, the entire bring-up is interruption-tolerant.
 
 ## Observability
 

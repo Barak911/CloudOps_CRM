@@ -78,7 +78,7 @@ Personal-account practicality drives a few defaults I'd flip for real production
 - **Single cluster** — one EKS cluster serves everything. Separate dev / staging / prod clusters are the obvious production answer.
 - **Self-signed TLS** — cert-manager issues a working cert; browsers warn. Swap to Let's Encrypt or ACM + Route53 + a real domain for prod.
 - **Karpenter NodePool capped at 32 vCPU / 64 GiB** — bursts beyond the baseline managed node group come from spot, but capped so a runaway scheduler can't blow up the bill. Lift the cap when there's a real budget.
-- **Manual bootstrap workflow** — one-time imperative install of ArgoCD, ExternalSecrets Operator, cert-manager, and Karpenter, after which ArgoCD adopts everything. The chicken-and-egg of "GitOps for the GitOps controller" is an honest boundary, not a gap. At org scale this would become an App-of-Apps root with a thin install script; for a single-cluster, single-developer project the abstraction would cost more than it earns. The bootstrap workflow is annotated at the top with what it does and where the line is — see [.github/workflows/bootstrap-cluster.yml](.github/workflows/bootstrap-cluster.yml).
+- **Terraform-driven substrate bootstrap (no procedural workflow)** — ArgoCD, ExternalSecrets Operator, cert-manager, Karpenter, and nginx-ingress are `helm_release` resources in `infra/helm_releases.tf`, gated by in-cluster `kubectl wait` Jobs (the "wait-Job pattern" — see [Key Decisions: Wait-Job pattern](#wait-job-pattern-out-of-process-readiness-barrier)). The three chicken-and-egg manifests that break the GitOps cycle (crm namespace, AWS SecretStore binding, root App-of-Apps) are `kubectl_manifest` resources in `infra/argocd_bootstrap.tf`. `terraform apply` from a clean cloud account brings up the entire platform end-to-end; the bootstrap workflow only verifies + seeds Elasticsearch + runs integration tests afterward.
 
 ## What This Project Implements
 
@@ -86,9 +86,9 @@ The patterns below are the substance. Each one is end-to-end, not stubbed.
 
 - **Infrastructure-as-code** for the full AWS footprint — EKS + 3 managed addons (VPC CNI with network-policy enforcement, CoreDNS, kube-proxy), ECR (immutable tags), IAM/OIDC, EBS CSI, S3 remote state, Secrets Manager, Karpenter (controller IRSA, node IAM, interruption SQS + EventBridge rules) — in `infra/`
 - **OIDC federation with role split** — `github-actions-bootstrap` (cluster-admin, trust gated by GitHub `environment:production`) and `github-actions-ci` (ECR push only, trust pinned to `refs/heads/main`). No long-lived keys, no day-2 cluster access from CI.
-- **GitOps delivery with ArgoCD** — multi-source Application reads the umbrella chart + a dedicated `image-state.yaml`. Day-2 CI never touches the cluster.
+- **GitOps delivery with ArgoCD** — root App-of-Apps spawns `crm-stack` (single-source umbrella chart with `valueFiles` including the CI-owned `image-state.yaml`), `crm-manifests` (plain K8s resources), and `prometheus-stack` (multi-source: external chart repo + local values overlay). Day-2 CI never touches the cluster.
 - **Helm umbrella chart** packaging the app, the MongoDB ReplicaSet, and the EFK stack as a single unit with shared config
-- **MongoDB HA** — 3-member ReplicaSet across AZs with pod anti-affinity, pre-shared keyfile for member auth, and an idempotent Helm/ArgoCD-hook Job that runs `rs.initiate()` and provisions the app-scoped user. PyMongo gets a multi-host URI with `?replicaSet=rs0`.
+- **MongoDB HA** — 3-member ReplicaSet across AZs with pod anti-affinity, pre-shared keyfile for member auth, and an idempotent ArgoCD Sync-hook Job that runs `rs.initiate()` and provisions the app-scoped user. PyMongo gets a multi-host URI with `?replicaSet=rs0`.
 - **Karpenter** for burst capacity — spot-first AL2023 with IMDSv2-only, encrypted gp3 root, soft AZ anti-affinity, 7-day node expiry, consolidation. Live test: a Pending pod triggered a spot c7a.medium in ~60s. Managed node group stays as the baseline for system pods.
 - **Default-deny NetworkPolicies** — VPC CNI runs with `enableNetworkPolicy=true` so policies are *enforced*, not documentation. Default-deny in `crm` (ingress+egress), ingress-default-deny in `monitoring`, with explicit allows for every real flow.
 - **Observability with real alerts** — Prometheus + Grafana with a ServiceMonitor for the app, Fluentd → Elasticsearch → Kibana for logs. `PrometheusRule` with Google SRE multi-window burn-rate alerts on a 99% SLO, p95 latency, target-down, crashloop, PVC-near-full, MongoDB-down. Alertmanager routing tree is real (severity → receiver, inhibit rule for the down→burn dependency); receivers are null stubs for this portfolio deployment — swap one for a Slack webhook to go live.
@@ -108,7 +108,7 @@ The Python/Flask CRM in [`app/`](app/) is a deliberately thin payload — its on
 | **Application** | Python Flask REST API, Gunicorn, MongoDB ReplicaSet |
 | **Containers** | Docker (multi-stage builds), Amazon ECR (immutable tags) |
 | **Orchestration** | Kubernetes (AWS EKS 1.31), Helm umbrella chart |
-| **GitOps** | ArgoCD (multi-source App) |
+| **GitOps** | ArgoCD (App-of-Apps; mixed single- and multi-source children) |
 | **CI/CD** | GitHub Actions with AWS OIDC federation, split bootstrap/CI roles |
 | **Infrastructure** | Terraform (EKS, ECR, IAM OIDC, EBS CSI, Karpenter, SQS, EventBridge, Secrets Manager) |
 | **Autoscaling** | Karpenter (NodePool + EC2NodeClass, spot-first, SQS interruption) |
@@ -181,7 +181,7 @@ The Python/Flask CRM in [`app/`](app/) is a deliberately thin payload — its on
 
 The image-state file is segregated from the umbrella `values.yaml` so the only file the bot ever touches is one with no co-located mongodb/fluentd tags to clobber, and a workflow-level concurrency gate serializes simultaneous runs so the `git pull --rebase` window never collides with itself.
 
-> **Bootstrap honesty.** The one-time `bootstrap-cluster.yml` workflow imperatively installs ArgoCD, ExternalSecrets Operator, cert-manager, and Karpenter so ArgoCD can adopt them afterward. "GitOps from absolute zero" requires bootstrapping the GitOps controller itself with something else — that's an honest boundary, not a gap.
+> **Bootstrap honesty.** "GitOps from absolute zero" requires bootstrapping the GitOps controller itself with something else. Here that something else is Terraform — ArgoCD + the rest of the substrate are `helm_release` resources, and the three chicken-and-egg manifests that hand the platform over to GitOps (crm namespace, AWS SecretStore binding, root App-of-Apps) are `kubectl_manifest` resources. One `terraform apply`, no procedural shell script in CI.
 
 ## Key Decisions (and the alternatives I considered first)
 
@@ -191,9 +191,17 @@ A few choices that aren't obvious from the file tree.
 
 The lazy path is `helm upgrade --install` in a GitHub Actions step. Works, fewer components to operate, most small projects use it.
 
-I picked ArgoCD because cluster state then lives in Git, not in the last successful CI log. Drift is detected and self-healed, day-2 CI doesn't need kubectl credentials (and the OIDC trust can be locked down accordingly — see Key Decisions: Split IAM roles), and rollback is a one-line `git revert` that ArgoCD picks up automatically. The cost: one more controller to operate, multi-source App YAMLs that aren't obvious the first time you read them, and a slower iteration loop (you commit a value change to see it apply).
+I picked ArgoCD because cluster state then lives in Git, not in the last successful CI log. Drift is detected and self-healed, day-2 CI doesn't need kubectl credentials (and the OIDC trust can be locked down accordingly — see Key Decisions: Split IAM roles), and rollback is a one-line `git revert` that ArgoCD picks up automatically. The cost: one more controller to operate, an App-of-Apps tree to maintain, and a slower iteration loop (you commit a value change to see it apply).
 
 For a one-developer project the cost is real. I took it on because the GitOps muscle is the one I want to build, and the discipline of "if it's not in Git, it's not in the cluster" is worth more than the saved minutes.
+
+### Wait-Job pattern (out-of-process readiness barrier)
+
+The obvious way to make Terraform wait for a Helm release to be ready is `helm_release { wait = true }`. It works for one chart. It breaks across five: each `wait = true` blocks INSIDE the terraform process and holds the state lock for the full wait window. Across the substrate (ArgoCD + ExternalSecrets + cert-manager + Karpenter + nginx-ingress) that's 15+ minutes of held lock. One network blip mid-apply and you're force-unlocking from another terminal — a real failure mode on a flaky laptop network.
+
+The alternative is `wait = false` plus a `kubernetes_job_v1` running `kubectl wait --for=condition=Available ...` *in-cluster*. Each helm_release returns in seconds; the blocking work moves to Job resources whose readiness check runs on the cluster, not on the terraform host. The state lock is held only briefly per resource. On a re-apply after an interruption the Job is idempotent — Terraform sees `succeeded=1` and moves on.
+
+Cost: more terraform code (one Job + one set of timeouts per release, shared RBAC in `infra/wait_gates.tf`), and the substrate namespace must NOT have PSA `restricted` enforce labels — the kubectl image needs minimal privileges the restricted profile doesn't allow. The pattern is canonical in modern eks-addon modules (`lablabs/terraform-aws-eks-universal-addon`), but it's worth understanding *why* before reaching for it.
 
 ### Split IAM roles + `environment:production` gate
 
@@ -205,7 +213,7 @@ Cost: one extra IAM role and a one-time `Settings → Environments` setup in Git
 
 ### Karpenter alongside the managed node group, not instead of it
 
-The pure-Karpenter setup (single NodePool, no managed node group) is elegant on paper. In practice the bootstrap workflow has to install Karpenter into *something*, and chicken-and-egg with system pods (CoreDNS, kube-proxy, the EBS CSI controller) is unpleasant.
+The pure-Karpenter setup (single NodePool, no managed node group) is elegant on paper. In practice Karpenter itself has to run somewhere, and chicken-and-egg with system pods (CoreDNS, kube-proxy, the EBS CSI controller) is unpleasant.
 
 The compromise: a 3-node managed node group carries the system pods + Karpenter controller itself, and a separate Karpenter NodePool handles burst capacity for application workloads. Spot-first with on-demand fallback, AL2023, IMDSv2-only, soft AZ anti-affinity, 7-day node expiry so I keep rolling onto fresh AMIs without manual intervention. The interruption SQS queue + EventBridge rules let Karpenter react to spot warnings before the kernel sends SIGTERM.
 
@@ -253,7 +261,7 @@ Everything in this table is a real production gap, not a stylistic preference. C
 | VPC | Custom VPC by default (`use_custom_vpc=true`) with private subnets + a single NAT | Multi-AZ NAT (single NAT is a SPOF + cross-AZ data charges); VPC endpoints for ECR / S3 / Secrets Manager to keep egress cheap |
 | IAM — CI | Split into bootstrap role (cluster-admin, trust gated by `environment:production`) and CI role (ECR push only, trust pinned to `refs/heads/main`, no cluster access entry) | Configure required reviewers on the `production` environment so a bootstrap run needs human approval; rotate the bootstrap role after each successful bring-up |
 | TLS | cert-manager + self-signed `ClusterIssuer` | Let's Encrypt or ACM with Route53-validated cert, real domain |
-| MongoDB HA | 3-member ReplicaSet, pod anti-affinity by AZ (soft), keyfile auth, rs.initiate via idempotent Helm/ArgoCD-hook Job, multi-host `?replicaSet=rs0` URI | Pin anti-affinity to *required* instead of preferred once the cluster spans 3+ AZs reliably; consider managed (DocumentDB / Atlas) to drop the rs.initiate Job entirely; add a `mongodb_exporter` so the `MongoDBDown` alert clears on healthy state instead of going `pending` |
+| MongoDB HA | 3-member ReplicaSet, pod anti-affinity by AZ (soft), keyfile auth, rs.initiate via idempotent ArgoCD Sync-hook Job (wave 0, internal polling loop), multi-host `?replicaSet=rs0` URI | Pin anti-affinity to *required* instead of preferred once the cluster spans 3+ AZs reliably; consider managed (DocumentDB / Atlas) to drop the rs.initiate Job entirely; add a `mongodb_exporter` so the `MongoDBDown` alert clears on healthy state instead of going `pending` |
 | Observability | RED-method SLO burn-rate alerts (Google SRE multi-window) + platform health rules loaded into Prometheus; Alertmanager routing tree wired with severity routes and inhibit rules; receivers are null stubs | Real receiver (PagerDuty / Slack) on the `pager-null` route; SLO doc and runbooks linked from the `runbook_url` annotations |
 | Network policy | Default-deny in `crm` and ingress-default-deny in `monitoring`, *enforced* by VPC CNI with `enableNetworkPolicy=true`; 14 explicit allows for every known flow | Per-tenant policies as the cluster gains tenants; an egress policy on the `kube-system` namespace itself |
 | Autoscaling | Karpenter NodePool capped at 32 vCPU / 64 GiB, spot-first AL2023, IMDSv2-only, SQS interruption queue + EventBridge rules for spot warnings and rebalance recommendations | Split into multiple NodePools by workload class (system / app / batch); explicit on-demand fallback for PRIMARY-eligible MongoDB members |
@@ -284,7 +292,7 @@ CloudOps_CRM/
 │   │   ├── Chart.yaml            # Dependencies: crm-app, mongodb, ES, Kibana, Fluentd
 │   │   ├── values.yaml           # Static config; image fields overridden by image-state
 │   │   └── charts/               # Subcharts (crm-app, mongodb are custom)
-│   ├── argocd/                   # ArgoCD Application CRDs (multi-source)
+│   ├── argocd/                   # Root App-of-Apps + child Applications
 │   ├── manifests/                # Plain K8s manifests applied via crm-manifests app
 │   │   ├── crm-ingress.yaml
 │   │   ├── crm-servicemonitor.yaml
@@ -304,6 +312,11 @@ CloudOps_CRM/
 │   ├── ebs-csi-driver.tf         # Persistent storage (gp3 default)
 │   ├── secrets.tf                # Secrets Manager + ExternalSecrets IRSA
 │   ├── karpenter.tf              # Karpenter IRSA + node IAM + SQS + EventBridge rules
+│   ├── helm_releases.tf          # ArgoCD/ESO/cert-manager/Karpenter/nginx-ingress
+│   │                             # + wait Jobs (out-of-process readiness barrier)
+│   ├── wait_gates.tf             # Shared SA/ClusterRole/Binding for the wait Jobs
+│   ├── argocd_bootstrap.tf       # Chicken-and-egg manifests: crm namespace,
+│   │                             # AWS SecretStore binding, root App-of-Apps
 │   ├── cleanup.tf                # Pre-destroy NLB drain (avoids orphaned NLBs)
 │   ├── vpc.tf                    # Custom VPC (default-on)
 │   ├── backend.tf                # S3 remote state (parameterized)
@@ -352,9 +365,11 @@ echo "YOUR_CLUSTER_NAME" | gh secret set EKS_CLUSTER_NAME --repo $REPO
 
 (Optional but recommended: add required reviewers to the `production` environment in GitHub's UI so a bootstrap run needs human approval.)
 
-### 3. Bootstrap the cluster
+### 3. Bootstrap is part of `terraform apply`
 
-Trigger the **Bootstrap EKS Cluster** workflow from GitHub Actions (manual `workflow_dispatch`). It installs ArgoCD, ExternalSecrets, cert-manager, Karpenter, applies the ArgoCD Application CRDs, then runs application + observability integration tests.
+The substrate (ArgoCD, ExternalSecrets, cert-manager, Karpenter, nginx-ingress) is installed by Terraform via `helm_release` + wait Jobs — there is no separate "install everything" step. After `terraform apply` finishes, the cluster already has ArgoCD reconciling the root App-of-Apps.
+
+Trigger the **Bootstrap EKS Cluster** workflow from GitHub Actions (manual `workflow_dispatch`) to verify ArgoCD has synced everything, seed the Elasticsearch logs index template + ingest pipeline, and run the application + observability integration tests.
 
 ### 4. Ongoing deployments
 

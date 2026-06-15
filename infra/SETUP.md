@@ -69,7 +69,16 @@ terraform plan
 terraform apply
 ```
 
-Plan creates ~120 resources (cluster, addons, node group, IAM, ECR, Karpenter infra, Secrets Manager, VPC). Expect 15–20 minutes total: ~10 minutes on the EKS control plane, ~5 on the managed node group, the rest in parallel.
+Plan creates ~110 resources: cluster, addons, node group, IAM, ECR, Karpenter infra, Secrets Manager, custom VPC, **plus** 5 substrate Helm releases (nginx-ingress, ArgoCD, ExternalSecrets, cert-manager, Karpenter) with in-cluster wait Jobs, **plus** the three chicken-and-egg manifests that hand the rest of the platform to ArgoCD (crm namespace, AWS SecretStore binding, root App-of-Apps).
+
+Expect 15–20 minutes total: ~10 minutes on the EKS control plane, ~5 on the managed node group, the rest in parallel. The Helm + wait-Job phase adds only a few minutes because the wait runs in-cluster (not in the terraform process — see [ARCHITECTURE.md → Wait-Job pattern](ARCHITECTURE.md#wait-job-pattern-out-of-process-readiness-barrier)). On a flaky network a re-`apply` resumes safely because the Jobs are idempotent.
+
+> Set these in your shell before long applies — they make the bring-up resilient to the Terraform Registry's intermittent CloudFront rate-limiting (HTTP 429) on a clean cache:
+> ```bash
+> export TF_PLUGIN_CACHE_DIR=~/.terraform.d/plugin-cache
+> export TF_REGISTRY_DISCOVERY_RETRY=10
+> mkdir -p "$TF_PLUGIN_CACHE_DIR"
+> ```
 
 ### 5. Connect to Cluster
 
@@ -101,7 +110,18 @@ terraform output -raw cluster_name | \
   gh secret set EKS_CLUSTER_NAME --repo $REPO
 ```
 
-### 7. Trigger the bootstrap workflow
+### 7. Verify ArgoCD adopted everything, then run integration tests
+
+By the time `terraform apply` returns, the substrate is up and ArgoCD is reconciling the root App-of-Apps. Spot-check from your laptop:
+
+```bash
+kubectl get applications -n argocd
+# root, crm-stack, crm-manifests, prometheus-stack should all be Synced + Healthy
+```
+
+If anything is `OutOfSync` or `Degraded`, jump to [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — the most common one is ArgoCD's stale render cache after a fast iteration loop.
+
+Then trigger the (now-slim) bootstrap workflow, which only verifies + seeds Elasticsearch + runs the integration tests:
 
 ```bash
 gh workflow run bootstrap-cluster.yml --repo $REPO --ref main \
@@ -109,7 +129,7 @@ gh workflow run bootstrap-cluster.yml --repo $REPO --ref main \
   --field cluster_name=$(terraform output -raw cluster_name)
 ```
 
-The bootstrap workflow installs ArgoCD, ExternalSecrets Operator, cert-manager, Karpenter, applies the ArgoCD Application CRDs, then runs application + observability integration tests. Watch it run with `gh run watch` or in the GitHub Actions UI.
+Watch with `gh run watch` or in the GitHub Actions UI.
 
 ## Access Control
 

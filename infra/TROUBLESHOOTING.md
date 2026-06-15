@@ -144,22 +144,101 @@ kubectl patch application <name> -n argocd \
   --type=merge -p '{"operation":{"sync":{"prune":true}}}'
 ```
 
+If `refresh=hard` doesn't shake it loose (the Redis-backed render cache can survive a repo-server restart), the nuclear option is to **delete + recreate** the Application:
+```bash
+kubectl delete application <name> -n argocd
+kubectl apply -f k8s/argocd/apps/<name>.yaml
+```
+The child resources are NOT deleted (Application deletion is what's removed; the workloads stay), but ArgoCD re-renders from scratch. This was the only way to clear a phantom `sync-wave: "5"` left over from a prior chart revision during the wait-Job refactor validation.
+
 ---
 
-## ArgoCD: Helm `helm.sh/hook` Job never runs on sync
+## Terraform: substrate wait Job stuck at 0/1 with PodSecurity "restricted" violation
 
-**Problem:** A chart Job annotated `helm.sh/hook: post-install,post-upgrade` doesn't appear in ArgoCD's resource list and never fires.
+**Problem:** A wait Job in `tf-bootstrap` (e.g. `argocd-ready`, `external-secrets-ready`) hangs at `0/1 Completions` with this in events:
+```
+pods "argocd-ready-xxx" is forbidden: violates PodSecurity "restricted:latest":
+allowPrivilegeEscalation != false, unrestricted capabilities, runAsNonRoot != true, ...
+```
 
-**Cause:** ArgoCD does not translate Helm hooks into its own sync hooks automatically. The Job has to also carry the ArgoCD-native annotation.
+**Cause:** The `tf-bootstrap` namespace has `pod-security.kubernetes.io/enforce: restricted` labels but `registry.k8s.io/kubectl` doesn't ship with a securityContext that satisfies the restricted profile.
 
-**Solution:**
+**Solution:** Either drop the PSA labels off the namespace, or add a full securityContext to each wait Job. The repo went with the first (a Job that only runs `kubectl wait` is genuinely low-risk):
+```yaml
+# infra/wait_gates.tf
+resource "kubernetes_namespace_v1" "tf_bootstrap" {
+  metadata {
+    name = "tf-bootstrap"
+    # PSA labels removed — see [TROUBLESHOOTING.md] for rationale.
+  }
+}
+```
+For an existing namespace, the live fix is:
+```bash
+kubectl label namespace tf-bootstrap \
+  pod-security.kubernetes.io/enforce- \
+  pod-security.kubernetes.io/audit- \
+  pod-security.kubernetes.io/warn-
+```
+
+---
+
+## ArgoCD: rs-init Job (or any Sync hook) never fires — sync-wave deadlock
+
+**Problem:** A chart-installed Job annotated with `argocd.argoproj.io/hook: Sync` and a sync-wave (e.g. `argocd.argoproj.io/sync-wave: "5"`) never appears as a running Job. The Application stays `Progressing` indefinitely. crm-app pods crashloop because they can't reach a PRIMARY mongo.
+
+**Cause:** ArgoCD waits for wave N to be Healthy before firing wave N+1. If a wave-0 resource (e.g. crm-app Deployment) needs the wave-5 hook to have already run, you've created a deadlock: wave 0 never reaches Healthy because rs.initiate never ran; wave 5 never fires because wave 0 is still Progressing.
+
+**Solution:** Drop all sync-wave annotations from the affected resources. Wave 0 for *everything* is the right design for an application stack — Kubernetes probes + retries handle ordering eventually. Sync-waves are for CRD-before-CR hard ordering, not for "I'd like A to come up before B."
+
+```yaml
+# Bad:
+annotations:
+  argocd.argoproj.io/hook: Sync
+  argocd.argoproj.io/sync-wave: "5"   # <-- deadlock if any wave-0 resource needs this hook
+
+# Good:
+annotations:
+  argocd.argoproj.io/hook: Sync
+  argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  # No wave = wave 0 = fires alongside everything else.
+  # The Job's internal bash loop polls the dependency.
+```
+
+After dropping the wave annotation, you'll likely also need to delete + recreate the Application (see [ArgoCD: chart change ...](#argocd-chart-change-pushed-but-live-state-still-shows-the-old-version)) because the stale wave number can survive in the render cache.
+
+---
+
+## ArgoCD: `helm.sh/hook` and `argocd.argoproj.io/hook` on the same resource — only one wins
+
+**Problem:** You added both `helm.sh/hook: post-install,post-upgrade` AND `argocd.argoproj.io/hook: Sync` to a Job hoping to support both `helm install` and ArgoCD-managed sync. Under ArgoCD the Job fires at PostSync, not Sync — and that breaks ordering with other Sync hooks.
+
+**Cause:** ArgoCD's Helm integration translates `helm.sh/hook: post-install` → `argocd.argoproj.io/hook: PostSync` and that translation **takes precedence** over any explicit `argocd.argoproj.io/hook: Sync` on the same resource.
+
+**Solution:** Pick one. For an ArgoCD-managed chart, drop the helm.sh/hook annotations:
 ```yaml
 annotations:
-  helm.sh/hook: post-install,post-upgrade           # for `helm install/upgrade`
-  helm.sh/hook-delete-policy: before-hook-creation
-  argocd.argoproj.io/hook: PostSync                 # for ArgoCD-managed reconcile
+  # NO helm.sh/hook here — would override the Sync hook below.
+  argocd.argoproj.io/hook: Sync
   argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 ```
+If you genuinely need both (chart usable via raw `helm install` AND under ArgoCD), pick the *same* phase for both: `helm.sh/hook: post-install,post-upgrade` + `argocd.argoproj.io/hook: PostSync`.
+
+---
+
+## ArgoCD: dual-mode chart (raw helm install + ArgoCD) hook annotations
+
+**Problem:** You want a chart's Job to fire both under raw `helm install` and under ArgoCD sync.
+
+**Solution:** Use BOTH annotation families with **matching phases**:
+```yaml
+annotations:
+  helm.sh/hook: post-install,post-upgrade           # for raw `helm install/upgrade`
+  helm.sh/hook-delete-policy: before-hook-creation
+  argocd.argoproj.io/hook: PostSync                 # ArgoCD-managed; MUST be PostSync
+  argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+```
+**Don't mix `helm.sh/hook: post-install` with `argocd.argoproj.io/hook: Sync`** — see the [hook-conflict entry](#argocd-helmshhook-and-argocdargoprojiohook-on-the-same-resource--only-one-wins) above. For an ArgoCD-only chart (this repo's case), drop the `helm.sh/hook` annotations entirely and use `argocd.argoproj.io/hook: Sync`.
 
 ---
 
