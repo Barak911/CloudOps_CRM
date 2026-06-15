@@ -1,0 +1,39 @@
+=== ArgoCD apps (clean apply, root + 2 children + the substrate via terraform) ===
+NAME               SYNC STATUS   HEALTH STATUS
+crm-manifests      OutOfSync     Healthy
+crm-stack          Synced        Progressing
+prometheus-stack   Synced        Healthy
+root               Synced        Healthy
+
+=== Pods by namespace ===
+  argocd             5/5 Running
+  cert-manager       3/3 Running
+  crm                10/10 Running
+  external-secrets   3/3 Running
+  ingress-nginx      1/1 Running
+  karpenter          2/2 Running
+  kube-system        13/13 Running
+  monitoring         8/8 Running
+
+=== MongoDB ReplicaSet (3 members on 3 distinct nodes) ===
+mongodb-0    Running  node=12m                            zone=
+mongodb-1    Running  node=ip-172-31-20-109.ec2.internal  zone=
+mongodb-2    Running  node=ip-172-31-65-60.ec2.internal   zone=
+
+=== ExternalSecrets (ESO -> AWS Secrets Manager) ===
+NAME                               STORE                 REFRESH INTERVAL   STATUS         READY
+elasticsearch-master-credentials   aws-secrets-manager   1h                 SecretSynced   True
+mongodb-app-credentials            aws-secrets-manager   1h                 SecretSynced   True
+mongodb-credentials                aws-secrets-manager   1h                 SecretSynced   True
+
+=== CRUD round-trip via Ingress ===
+Ingress: ac3aafaae2ca54ef4a95d0b516c6c3ed-874ee8cf474ed648.elb.us-east-1.amazonaws.com
+GET /ready:    {"database":"connected","service":"CRM API","status":"ready"}
+GET /stats:    {"latest_entry_id":"6a30039ee701941cdf9f9196","total_persons":1}
+GET /person/proof-1:
+{
+    "_id": "6a30039ee701941cdf9f9196",
+    "email": "p@t.com",
+    "name": "Proof",
+    "person_id": "proof-1"
+}
