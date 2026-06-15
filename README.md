@@ -312,8 +312,7 @@ CloudOps_CRM/
 │   └── TROUBLESHOOTING.md
 │
 ├── docs/proof/                   # Captures from a live bootstrap run
-├── Makefile                      # Developer shortcuts (test, build, lint, plan)
-└── CHANGELOG.md                  # Full change history across all phases
+└── Makefile                      # Developer shortcuts (test, build, lint, plan)
 ```
 
 ## Quick Start
@@ -404,7 +403,6 @@ pytest test_app.py -v         # Unit tests
 | [`infra/SETUP.md`](infra/SETUP.md) | Step-by-step deployment guide |
 | [`infra/TROUBLESHOOTING.md`](infra/TROUBLESHOOTING.md) | Common issues and fixes |
 | [`k8s/MONITORING.md`](k8s/MONITORING.md) | Observability stack setup |
-| [`CHANGELOG.md`](CHANGELOG.md) | Complete change history |
 
 ## License
 
