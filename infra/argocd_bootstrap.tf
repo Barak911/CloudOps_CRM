@@ -61,31 +61,6 @@ resource "kubectl_manifest" "external_secrets_sa" {
   ]
 }
 
-# helm_release returns when the chart's Deployment is Ready — that does NOT
-# imply the CRDs the chart installs are Established by the kube-apiserver.
-# kubectl_manifest plan-time validation against the cluster API fails if the
-# CRD isn't Established yet. This null_resource gates the SecretStore behind
-# an explicit CRD-Established wait. Same pattern for any future CRD consumer.
-resource "null_resource" "wait_external_secrets_crds" {
-  triggers = {
-    helm_release_id = helm_release.external_secrets.id
-  }
-
-  provisioner "local-exec" {
-    command     = <<-EOT
-      set -e
-      aws eks update-kubeconfig --name "${module.eks.cluster_name}" --region "${var.aws_region}" --alias _bootstrap_kubeconfig
-      kubectl --context _bootstrap_kubeconfig wait --for=condition=Established \
-        crd/secretstores.external-secrets.io --timeout=120s
-      kubectl --context _bootstrap_kubeconfig wait --for=condition=Established \
-        crd/externalsecrets.external-secrets.io --timeout=120s
-    EOT
-    interpreter = ["bash", "-c"]
-  }
-
-  depends_on = [helm_release.external_secrets]
-}
-
 resource "kubectl_manifest" "aws_secrets_manager_store" {
   # validate_schema=false bypasses the provider's client-side cluster
   # discovery, which gets cached on first use and doesn't see CRDs added
@@ -111,8 +86,12 @@ resource "kubectl_manifest" "aws_secrets_manager_store" {
                 name: external-secrets-sa
   YAML
 
+  # The CRD-Established wait that gates this resource lives in
+  # kubernetes_job_v1.external_secrets_ready (infra/helm_releases.tf).
+  # It runs in-cluster via `kubectl wait --for=condition=Established`,
+  # not on the terraform host — see infra/wait_gates.tf for rationale.
   depends_on = [
-    null_resource.wait_external_secrets_crds,
+    kubernetes_job_v1.external_secrets_ready,
     kubectl_manifest.external_secrets_sa,
   ]
 }
@@ -170,8 +149,12 @@ resource "kubectl_manifest" "aws_secrets_manager_store" {
 resource "kubectl_manifest" "argocd_root_app" {
   yaml_body = file("${path.module}/../k8s/argocd/root-app.yaml")
 
+  # Gate on the ArgoCD wait Job (argocd-server Deployment Available), not
+  # on helm_release.argocd directly — helm_release returns as soon as
+  # apply happens; the wait Job is what guarantees argocd-server is up
+  # so the Application CR is admitted.
   depends_on = [
-    helm_release.argocd,
+    kubernetes_job_v1.argocd_ready,
     kubectl_manifest.aws_secrets_manager_store,
   ]
 }

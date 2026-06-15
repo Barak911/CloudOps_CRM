@@ -1,19 +1,97 @@
 # Substrate controllers installed by Terraform via the helm provider.
 #
-# These four releases sit on the same lifecycle as the cluster itself:
+# These five releases sit on the same lifecycle as the cluster itself:
 # nothing else can schedule until they're up, and they can't be GitOps-managed
-# yet because the GitOps controller IS one of them. Once they're running,
-# Terraform applies the App-of-Apps root (infra/argocd_bootstrap.tf) and
-# everything else flows through ArgoCD.
+# yet because the GitOps controller IS one of them.
 #
-# Each release depends on the EKS module and on the managed addons being
-# Ready — without CoreDNS, CNI, kube-proxy, helm installs can't pull images
-# or resolve services. The addons live inside the module, so depending on
-# `module.eks` is sufficient (terraform-aws-modules/eks v20 declares the
-# addons as dependents of the cluster).
+# Pattern: `wait = false` + `kubernetes_job` running `kubectl wait` per
+# release. See infra/wait_gates.tf for the design rationale (short version:
+# `wait = true` holds the terraform state lock for 15+ minutes across the
+# five releases; moving the wait into in-cluster Jobs takes the lock-held
+# time per release from minutes to seconds).
+#
+# Downstream resources (kubectl_manifest for the ClusterIssuer, SecretStore,
+# Karpenter NodePool, root App) depend on the *wait Job*, not on the
+# helm_release directly. That dependency chain is what guarantees ordering.
 
 # -----------------------------------------------------------------------------
-# ArgoCD
+# Local helper: minimal Job spec for `kubectl wait`. Inlined into each
+# kubernetes_job below — Terraform doesn't have proper template functions
+# for resource bodies, so duplication is intentional.
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Nginx Ingress Controller — substrate. Other helm releases that create
+# Ingresses (ArgoCD's server.ingress) need this controller's admission
+# webhook to be live, so nginx-ingress comes first.
+# -----------------------------------------------------------------------------
+
+resource "helm_release" "nginx_ingress" {
+  name             = "nginx-ingress"
+  namespace        = "ingress-nginx"
+  create_namespace = true
+
+  repository = "https://kubernetes.github.io/ingress-nginx"
+  chart      = "ingress-nginx"
+  version    = "4.14.3"
+
+  values = [file("${path.module}/../k8s/values/nginx-ingress-values.yaml")]
+
+  wait    = false # the wait Job below holds the readiness gate
+  timeout = 120
+
+  depends_on = [module.eks]
+}
+
+resource "kubernetes_job_v1" "nginx_ingress_ready" {
+  metadata {
+    name      = "wait-nginx-ingress"
+    namespace = kubernetes_namespace_v1.tf_bootstrap.metadata[0].name
+  }
+
+  spec {
+    backoff_limit              = 5
+    ttl_seconds_after_finished = 300
+
+    template {
+      metadata {
+        labels = { app = "wait-nginx-ingress" }
+      }
+      spec {
+        service_account_name = kubernetes_service_account_v1.wait_gate.metadata[0].name
+        restart_policy       = "OnFailure"
+        container {
+          name  = "wait"
+          image = local.wait_image
+          args = [
+            "wait",
+            "--namespace=ingress-nginx",
+            "--for=condition=Available",
+            "--timeout=600s",
+            "deployment/nginx-ingress-ingress-nginx-controller",
+          ]
+        }
+      }
+    }
+  }
+
+  wait_for_completion = true
+
+  timeouts {
+    create = "15m"
+    update = "15m"
+  }
+
+  depends_on = [
+    helm_release.nginx_ingress,
+    kubernetes_cluster_role_binding_v1.wait_gate,
+  ]
+}
+
+# -----------------------------------------------------------------------------
+# ArgoCD — the GitOps controller. Must wait for nginx_ingress_ready because
+# ArgoCD's chart creates an Ingress and the nginx admission webhook will
+# reject it until the controller is up.
 # -----------------------------------------------------------------------------
 
 resource "helm_release" "argocd" {
@@ -27,20 +105,68 @@ resource "helm_release" "argocd" {
 
   values = [file("${path.module}/../k8s/values/argocd-values.yaml")]
 
-  wait    = true
-  timeout = 600
+  wait    = false
+  timeout = 120
 
-  # nginx-ingress must be Ready first: the ArgoCD chart now creates an
-  # Ingress (server.ingress.enabled=true), and the nginx admission webhook
-  # rejects the Ingress until the controller is up.
   depends_on = [
     module.eks,
-    helm_release.nginx_ingress,
+    kubernetes_job_v1.nginx_ingress_ready,
+  ]
+}
+
+resource "kubernetes_job_v1" "argocd_ready" {
+  metadata {
+    name      = "wait-argocd"
+    namespace = kubernetes_namespace_v1.tf_bootstrap.metadata[0].name
+  }
+
+  spec {
+    backoff_limit              = 5
+    ttl_seconds_after_finished = 300
+
+    template {
+      metadata {
+        labels = { app = "wait-argocd" }
+      }
+      spec {
+        service_account_name = kubernetes_service_account_v1.wait_gate.metadata[0].name
+        restart_policy       = "OnFailure"
+        container {
+          name  = "wait"
+          image = local.wait_image
+          # Gate on argocd-server, the single Deployment that the root App
+          # CRD application + the application-controller need. The other
+          # ArgoCD components (repo-server, redis, applicationset) reconcile
+          # in parallel and don't block apply.
+          args = [
+            "wait",
+            "--namespace=argocd",
+            "--for=condition=Available",
+            "--timeout=600s",
+            "deployment/argocd-server",
+          ]
+        }
+      }
+    }
+  }
+
+  wait_for_completion = true
+  timeouts {
+    create = "15m"
+    update = "15m"
+  }
+
+  depends_on = [
+    helm_release.argocd,
+    kubernetes_cluster_role_binding_v1.wait_gate,
   ]
 }
 
 # -----------------------------------------------------------------------------
-# ExternalSecrets Operator (binds the cluster to AWS Secrets Manager via IRSA)
+# ExternalSecrets Operator — provides ClusterSecretStore + ExternalSecret CRDs.
+# Downstream SecretStore in argocd_bootstrap.tf gates on the CRD being
+# Established, not just the operator Deployment being Ready, because the
+# kubectl provider's REST client construction needs the CRD discoverable.
 # -----------------------------------------------------------------------------
 
 resource "helm_release" "external_secrets" {
@@ -57,14 +183,74 @@ resource "helm_release" "external_secrets" {
     value = "true"
   }
 
-  wait    = true
-  timeout = 300
+  wait    = false
+  timeout = 120
 
   depends_on = [module.eks]
 }
 
+resource "kubernetes_job_v1" "external_secrets_ready" {
+  metadata {
+    name      = "wait-external-secrets"
+    namespace = kubernetes_namespace_v1.tf_bootstrap.metadata[0].name
+  }
+
+  spec {
+    backoff_limit              = 5
+    ttl_seconds_after_finished = 300
+
+    template {
+      metadata {
+        labels = { app = "wait-external-secrets" }
+      }
+      spec {
+        service_account_name = kubernetes_service_account_v1.wait_gate.metadata[0].name
+        restart_policy       = "OnFailure"
+        # Two containers run in parallel: one waits for the operator
+        # Deployment, the other for the CRDs to be Established.
+        container {
+          name  = "wait-operator"
+          image = local.wait_image
+          args = [
+            "wait",
+            "--namespace=external-secrets",
+            "--for=condition=Available",
+            "--timeout=600s",
+            "deployment/external-secrets",
+          ]
+        }
+        container {
+          name  = "wait-crds"
+          image = local.wait_image
+          args = [
+            "wait",
+            "--for=condition=Established",
+            "--timeout=600s",
+            "crd/secretstores.external-secrets.io",
+            "crd/externalsecrets.external-secrets.io",
+            "crd/clustersecretstores.external-secrets.io",
+          ]
+        }
+      }
+    }
+  }
+
+  wait_for_completion = true
+  timeouts {
+    create = "15m"
+    update = "15m"
+  }
+
+  depends_on = [
+    helm_release.external_secrets,
+    kubernetes_cluster_role_binding_v1.wait_gate,
+  ]
+}
+
 # -----------------------------------------------------------------------------
-# cert-manager (self-signed ClusterIssuer for ingress TLS)
+# cert-manager — gate on the webhook Deployment, not the cert-manager
+# Deployment itself. cert-manager-webhook is the one downstream
+# ClusterIssuer/Certificate creation actually waits on.
 # -----------------------------------------------------------------------------
 
 resource "helm_release" "cert_manager" {
@@ -81,13 +267,59 @@ resource "helm_release" "cert_manager" {
     value = "true"
   }
 
-  wait    = true
-  timeout = 300
+  wait    = false
+  timeout = 120
 
   depends_on = [module.eks]
 }
 
-# Self-signed ClusterIssuer — applied after cert-manager is up.
+resource "kubernetes_job_v1" "cert_manager_ready" {
+  metadata {
+    name      = "wait-cert-manager"
+    namespace = kubernetes_namespace_v1.tf_bootstrap.metadata[0].name
+  }
+
+  spec {
+    backoff_limit              = 5
+    ttl_seconds_after_finished = 300
+
+    template {
+      metadata {
+        labels = { app = "wait-cert-manager" }
+      }
+      spec {
+        service_account_name = kubernetes_service_account_v1.wait_gate.metadata[0].name
+        restart_policy       = "OnFailure"
+        # cert-manager has 3 Deployments. The webhook is the gating one;
+        # ClusterIssuer creation goes through admission validation and
+        # fails until webhook is Available.
+        container {
+          name  = "wait-webhook"
+          image = local.wait_image
+          args = [
+            "wait",
+            "--namespace=cert-manager",
+            "--for=condition=Available",
+            "--timeout=600s",
+            "deployment/cert-manager-webhook",
+          ]
+        }
+      }
+    }
+  }
+
+  wait_for_completion = true
+  timeouts {
+    create = "15m"
+    update = "15m"
+  }
+
+  depends_on = [
+    helm_release.cert_manager,
+    kubernetes_cluster_role_binding_v1.wait_gate,
+  ]
+}
+
 resource "kubectl_manifest" "selfsigned_clusterissuer" {
   yaml_body = <<-YAML
     apiVersion: cert-manager.io/v1
@@ -98,41 +330,12 @@ resource "kubectl_manifest" "selfsigned_clusterissuer" {
       selfSigned: {}
   YAML
 
-  depends_on = [helm_release.cert_manager]
+  depends_on = [kubernetes_job_v1.cert_manager_ready]
 }
 
 # -----------------------------------------------------------------------------
-# Nginx Ingress Controller (substrate — every Application's Ingress depends
-# on the IngressClass + the NLB this provisions).
-# -----------------------------------------------------------------------------
-#
-# Was an ArgoCD child app, moved here because the chart's pre-install hook
-# (admission-create Job) interacts badly with ArgoCD's PreSync semantics —
-# the hook completes successfully in AWS but ArgoCD's view stays stuck on
-# "waiting for completion of hook batch/Job/..." forever. Installing via
-# terraform's helm provider sidesteps ArgoCD's hook handling entirely,
-# which is the right tradeoff anyway: nginx-ingress is platform substrate
-# (every other workload depends on it), same category as ArgoCD itself.
-
-resource "helm_release" "nginx_ingress" {
-  name             = "nginx-ingress"
-  namespace        = "ingress-nginx"
-  create_namespace = true
-
-  repository = "https://kubernetes.github.io/ingress-nginx"
-  chart      = "ingress-nginx"
-  version    = "4.14.3"
-
-  values = [file("${path.module}/../k8s/values/nginx-ingress-values.yaml")]
-
-  wait    = true
-  timeout = 600
-
-  depends_on = [module.eks]
-}
-
-# -----------------------------------------------------------------------------
-# Karpenter (burst node autoscaler — see infra/karpenter.tf for IAM + SQS)
+# Karpenter — burst node autoscaler. See infra/karpenter.tf for the IAM
+# + SQS infrastructure it consumes.
 # -----------------------------------------------------------------------------
 
 resource "helm_release" "karpenter" {
@@ -179,8 +382,8 @@ resource "helm_release" "karpenter" {
     value = "512Mi"
   }
 
-  wait    = true
-  timeout = 600
+  wait    = false
+  timeout = 120
 
   depends_on = [
     module.eks,
@@ -191,8 +394,65 @@ resource "helm_release" "karpenter" {
   ]
 }
 
-# Karpenter EC2NodeClass + NodePool — applied after Karpenter helm release
-# is Ready. envsubst is gone; values come straight from terraform.
+resource "kubernetes_job_v1" "karpenter_ready" {
+  metadata {
+    name      = "wait-karpenter"
+    namespace = kubernetes_namespace_v1.tf_bootstrap.metadata[0].name
+  }
+
+  spec {
+    backoff_limit              = 5
+    ttl_seconds_after_finished = 300
+
+    template {
+      metadata {
+        labels = { app = "wait-karpenter" }
+      }
+      spec {
+        service_account_name = kubernetes_service_account_v1.wait_gate.metadata[0].name
+        restart_policy       = "OnFailure"
+        # Karpenter publishes its CRDs (EC2NodeClass, NodePool); gate on
+        # both the controller Deployment AND those CRDs being Established
+        # so the downstream kubectl_manifest doesn't fail on REST client init.
+        container {
+          name  = "wait-deployment"
+          image = local.wait_image
+          args = [
+            "wait",
+            "--namespace=karpenter",
+            "--for=condition=Available",
+            "--timeout=600s",
+            "deployment/karpenter",
+          ]
+        }
+        container {
+          name  = "wait-crds"
+          image = local.wait_image
+          args = [
+            "wait",
+            "--for=condition=Established",
+            "--timeout=600s",
+            "crd/ec2nodeclasses.karpenter.k8s.aws",
+            "crd/nodepools.karpenter.sh",
+          ]
+        }
+      }
+    }
+  }
+
+  wait_for_completion = true
+  timeouts {
+    create = "15m"
+    update = "15m"
+  }
+
+  depends_on = [
+    helm_release.karpenter,
+    kubernetes_cluster_role_binding_v1.wait_gate,
+  ]
+}
+
+# Karpenter EC2NodeClass + NodePool — values come from terraform.
 resource "kubectl_manifest" "karpenter_ec2nodeclass" {
   yaml_body = <<-YAML
     apiVersion: karpenter.k8s.aws/v1
@@ -227,7 +487,7 @@ resource "kubectl_manifest" "karpenter_ec2nodeclass" {
         karpenter.sh/discovery: ${var.cluster_name}
   YAML
 
-  depends_on = [helm_release.karpenter]
+  depends_on = [kubernetes_job_v1.karpenter_ready]
 }
 
 resource "kubectl_manifest" "karpenter_nodepool" {
