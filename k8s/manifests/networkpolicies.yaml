@@ -191,10 +191,14 @@ spec:
       ports:
         - protocol: TCP
           port: 9300
-    # fluentd + kibana -> ES HTTP API.
+    # fluentd + kibana + the chart-baked ES seed Job -> ES HTTP API.
     # Match BOTH label schemes — vendored charts use `app` while upstream
     # charts use `app.kubernetes.io/name`. Two podSelector entries in the
     # same `from:` block is an OR.
+    #
+    # `elasticsearch-master` is included so the seed Job (which carries
+    # `app: elasticsearch-master` to inherit the egress allow above) can
+    # PUT the index template + ingest pipeline through the HTTP API.
     - from:
         - podSelector:
             matchExpressions:
@@ -205,7 +209,7 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [fluentd, kibana]
+                values: [fluentd, kibana, elasticsearch-master]
       ports:
         - protocol: TCP
           port: 9200

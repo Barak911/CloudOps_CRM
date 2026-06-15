@@ -1,0 +1,119 @@
+# Elasticsearch data-plane seed: index template + ingest pipeline.
+#
+# Why a chart-baked Job (and not a CI workflow step):
+# Fluentd's output config references `pipeline logs-generic`. Without that
+# pipeline present in ES, every write returns HTTP 400, the failed record
+# is wrapped back into the retry buffer as a nested string, and after
+# enough loops the container OOMs and CrashLoops. The cluster works
+# end-to-end *except* for log ingest until ES is seeded — a footgun
+# whenever bring-up doesn't also run bootstrap-cluster.yml.
+#
+# Mirrors the rs-init Job in the mongodb subchart: ArgoCD Sync hook at
+# wave 0 with an internal polling loop that waits for ES to be reachable,
+# then PUTs the index template + ingest pipeline. Idempotent — ES treats
+# PUT on an existing pipeline as upsert, so re-runs are no-ops.
+#
+# No helm.sh/hook annotation — under ArgoCD it translates to PostSync and
+# takes precedence over `argocd.argoproj.io/hook: Sync`. See
+# infra/TROUBLESHOOTING.md.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "crm-stack.fullname" . }}-elasticsearch-seed
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "crm-stack.labels" . | nindent 4 }}
+  annotations:
+    "argocd.argoproj.io/hook": Sync
+    "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "crm-stack.selectorLabels" . | nindent 8 }}
+        # Inherit `app: elasticsearch-master` so the existing NetworkPolicies
+        # in k8s/manifests/networkpolicies.yaml admit this pod for egress
+        # (allow-fluentd-kibana-es-egress) and ES ingress
+        # (allow-elasticsearch-ingress). Same trick the mongo rs-init Job
+        # uses with `app: mongodb`. The pod is short-lived bootstrap and
+        # genuinely IS part of the ES data-plane initialization.
+        app: elasticsearch-master
+        job: elasticsearch-seed
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: curlimages/curl:8.10.1
+          env:
+            - name: ES_HOST
+              value: "elasticsearch-master.{{ .Values.global.namespace }}.svc.cluster.local"
+            - name: ES_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-master-credentials
+                  key: username
+            - name: ES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-master-credentials
+                  key: password
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+
+              echo "Waiting for Elasticsearch at $ES_HOST:9200..."
+              # `cluster.health?wait_for_status=yellow&timeout=2s` is the
+              # canonical "is ES accepting writes" probe. Single-node ES
+              # with replicas=0 stays at YELLOW indefinitely (that's the
+              # healthy steady state), so yellow is the right bar.
+              until curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" \
+                  "https://$ES_HOST:9200/_cluster/health?wait_for_status=yellow&timeout=2s" \
+                  > /dev/null; do
+                sleep 3
+              done
+              echo "Elasticsearch reachable."
+
+              echo "Upserting logs-template index template..."
+              curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" \
+                -X PUT "https://$ES_HOST:9200/_index_template/logs-template" \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  "index_patterns": ["logs-*"],
+                  "priority": 200,
+                  "template": {
+                    "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+                    "mappings": {
+                      "properties": {
+                        "message":              { "type": "text" },
+                        "service.name":         { "type": "keyword" },
+                        "service.type":         { "type": "keyword" },
+                        "event.dataset":        { "type": "keyword" },
+                        "event.decoded":        { "type": "object", "enabled": true },
+                        "host.name":            { "type": "keyword" },
+                        "container.name":       { "type": "keyword" },
+                        "kubernetes.pod.name":  { "type": "keyword" },
+                        "kubernetes.namespace": { "type": "keyword" },
+                        "@log_name":            { "type": "keyword" },
+                        "@timestamp":           { "type": "date" }
+                      }
+                    }
+                  }
+                }'
+              echo ""
+
+              echo "Upserting logs-generic ingest pipeline..."
+              curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" \
+                -X PUT "https://$ES_HOST:9200/_ingest/pipeline/logs-generic" \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  "description": "Parse JSON logs into event.decoded field",
+                  "processors": [
+                    { "json": { "field": "message", "target_field": "event.decoded", "ignore_failure": true } }
+                  ]
+                }'
+              echo ""
+              echo "Elasticsearch seed complete."

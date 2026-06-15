@@ -12,7 +12,8 @@ name: Bootstrap EKS Cluster
 #      manifests that break the GitOps bootstrap cycle.
 #   2. Operator triggers this workflow. It:
 #        a. Confirms the ArgoCD root + children are Synced + Healthy.
-#        b. Seeds Elasticsearch with the logs index template + ingest pipeline.
+#        b. Asserts the chart-baked Elasticsearch seed Job (Sync hook in
+#           the crm-stack umbrella chart) reached Complete.
 #        c. Runs CRM and observability integration tests.
 #        d. Posts a deployment report.
 #
@@ -43,10 +44,10 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Job 1: Confirm Terraform's bootstrap landed; seed ES data
+  # Job 1: Confirm Terraform's bootstrap landed
   # ---------------------------------------------------------------------------
-  verify-and-seed:
-    name: Verify GitOps + seed Elasticsearch
+  verify:
+    name: Verify GitOps reconcile
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -125,57 +126,17 @@ jobs:
             sleep 10
           done
 
-      - name: Seed Elasticsearch index template + ingest pipeline
+      - name: Confirm Elasticsearch seed Job succeeded
+        # The seed (index template + ingest pipeline) is now a chart-baked
+        # ArgoCD Sync-hook Job — k8s/crm-stack/templates/elasticsearch-seed-job.yaml.
+        # ArgoCD fires it on every crm-stack sync; this step just asserts
+        # the most recent run completed.
         run: |
-          # Wait for ES to be Ready — it's syncing in via the crm-stack chart.
-          kubectl wait --for=condition=ready pod/elasticsearch-master-0 \
-            -n crm --timeout=300s
-
-          ES_PASSWORD=$(kubectl get secret elasticsearch-master-credentials \
-            -n crm -o jsonpath='{.data.password}' | base64 -d)
-
-          echo "Creating logs index template..."
-          kubectl exec elasticsearch-master-0 -n crm -- curl -k -s \
-            -u "elastic:${ES_PASSWORD}" \
-            -X PUT "https://localhost:9200/_index_template/logs-template" \
-            -H 'Content-Type: application/json' \
-            -d '{
-              "index_patterns": ["logs-*"],
-              "priority": 200,
-              "template": {
-                "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
-                "mappings": {
-                  "properties": {
-                    "message":              { "type": "text" },
-                    "service.name":         { "type": "keyword" },
-                    "service.type":         { "type": "keyword" },
-                    "event.dataset":        { "type": "keyword" },
-                    "event.decoded":        { "type": "object", "enabled": true },
-                    "host.name":            { "type": "keyword" },
-                    "container.name":       { "type": "keyword" },
-                    "kubernetes.pod.name":  { "type": "keyword" },
-                    "kubernetes.namespace": { "type": "keyword" },
-                    "@log_name":            { "type": "keyword" },
-                    "@timestamp":           { "type": "date" }
-                  }
-                }
-              }
-            }'
-          echo ""
-
-          echo "Creating logs-generic ingest pipeline..."
-          kubectl exec elasticsearch-master-0 -n crm -- curl -k -s \
-            -u "elastic:${ES_PASSWORD}" \
-            -X PUT "https://localhost:9200/_ingest/pipeline/logs-generic" \
-            -H 'Content-Type: application/json' \
-            -d '{
-              "description": "Parse JSON logs into event.decoded field",
-              "processors": [
-                { "json": { "field": "message", "target_field": "event.decoded", "ignore_failure": true } }
-              ]
-            }'
-          echo ""
-          echo "Elasticsearch seed complete."
+          echo "Waiting for crm-stack-elasticsearch-seed Job to be Complete..."
+          kubectl wait --for=condition=complete \
+            job/crm-stack-elasticsearch-seed -n crm --timeout=300s
+          echo "Seed Job Complete. Logs:"
+          kubectl logs -n crm job/crm-stack-elasticsearch-seed --tail=20
 
   # ---------------------------------------------------------------------------
   # Job 2: CRM API integration tests via the ingress
@@ -184,7 +145,7 @@ jobs:
     name: Test CRM Application
     runs-on: ubuntu-latest
     environment: production
-    needs: verify-and-seed
+    needs: verify
     permissions:
       contents: read
       id-token: write
@@ -208,7 +169,7 @@ jobs:
 
       - name: Health + Readiness + Stats
         env:
-          INGRESS_URL: ${{ needs.verify-and-seed.outputs.ingress-url }}
+          INGRESS_URL: ${{ needs.verify.outputs.ingress-url }}
         run: |
           set -e
           echo "→ /health"
@@ -223,7 +184,7 @@ jobs:
 
       - name: CRUD round-trip
         env:
-          INGRESS_URL: ${{ needs.verify-and-seed.outputs.ingress-url }}
+          INGRESS_URL: ${{ needs.verify.outputs.ingress-url }}
         run: |
           set -e
           curl -sfk -X POST "https://$INGRESS_URL/person/ci-test-1" \
@@ -246,8 +207,8 @@ jobs:
     name: Test Observability Stack
     runs-on: ubuntu-latest
     environment: production
-    needs: verify-and-seed
-    if: always() && needs.verify-and-seed.result == 'success'
+    needs: verify
+    if: always() && needs.verify.result == 'success'
     permissions:
       contents: read
       id-token: write
@@ -300,7 +261,7 @@ jobs:
     name: Deployment Report
     runs-on: ubuntu-latest
     environment: production
-    needs: [verify-and-seed, test-crm-application, test-observability]
+    needs: [verify, test-crm-application, test-observability]
     if: always()
     permissions:
       contents: read
@@ -337,7 +298,7 @@ jobs:
             echo '```'
             echo ""
             echo "## Jobs"
-            echo "- Verify + Seed:  ${{ needs.verify-and-seed.result }}"
+            echo "- Verify:  ${{ needs.verify.result }}"
             echo "- Test CRM App:   ${{ needs.test-crm-application.result }}"
             echo "- Test Observ.:   ${{ needs.test-observability.result }}"
           } | tee -a $GITHUB_STEP_SUMMARY
