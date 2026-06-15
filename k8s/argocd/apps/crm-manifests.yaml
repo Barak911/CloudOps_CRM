@@ -24,3 +24,19 @@ spec:
       prune: true
     syncOptions:
       - ServerSideApply=true
+  # ESO's admission webhook fills in field-level defaults on every
+  # ExternalSecret (`conversionStrategy`, `decodingStrategy`,
+  # `metadataPolicy`, `deletionPolicy`). Git doesn't declare them, so
+  # ArgoCD would mark the resources OutOfSync indefinitely. Telling Argo
+  # to ignore those specific JSON pointers keeps git as the source of
+  # truth for what we care about (refs, target, refresh interval) while
+  # letting ESO own its operational defaults.
+  ignoreDifferences:
+    - group: external-secrets.io
+      kind: ExternalSecret
+      jsonPointers:
+        - /spec/target/deletionPolicy
+      jqPathExpressions:
+        - .spec.data[].remoteRef.conversionStrategy
+        - .spec.data[].remoteRef.decodingStrategy
+        - .spec.data[].remoteRef.metadataPolicy
