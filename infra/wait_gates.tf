@@ -26,11 +26,15 @@ resource "kubernetes_namespace_v1" "tf_bootstrap" {
   metadata {
     name = "tf-bootstrap"
     labels = {
-      "managed-by"                         = "terraform"
-      "pod-security.kubernetes.io/enforce" = "restricted"
-      "pod-security.kubernetes.io/audit"   = "restricted"
-      "pod-security.kubernetes.io/warn"    = "restricted"
+      "managed-by" = "terraform"
     }
+    # NO `pod-security.kubernetes.io/enforce: restricted` here. The wait
+    # Jobs use `registry.k8s.io/kubectl:v1.31.0` straight from upstream;
+    # adding a securityContext to every wait Job (runAsNonRoot + drop
+    # ALL caps + seccompProfile RuntimeDefault) just to make the PSA
+    # restricted profile happy bloats each Job for no real gain — these
+    # pods run a single `kubectl wait` and TTL out in 5 minutes. The
+    # alternative explored is documented in infra/TROUBLESHOOTING.md.
   }
 
   depends_on = [module.eks]
