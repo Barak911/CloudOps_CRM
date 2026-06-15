@@ -5,6 +5,10 @@ metadata:
   namespace: {{ .Values.global.namespace }}
   labels:
     {{- include "crm-app.labels" . | nindent 4 }}
+  annotations:
+    # crm-app depends on the mongodb ReplicaSet existing AND rs.initiate
+    # having run. Wave 10 puts it after the rs-init Sync hook (wave 5).
+    argocd.argoproj.io/sync-wave: "10"
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}

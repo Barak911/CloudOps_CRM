@@ -86,10 +86,11 @@ jobs:
           done
           echo "All manifests are valid YAML"
 
-  # Build, test, scan, push Docker image (only when app/ changes)
+  # Build, test, scan, push Docker image when app/ changes — or when triggered
+  # manually via workflow_dispatch (used to seed a fresh ECR after teardown).
   build-test-push:
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.app == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
