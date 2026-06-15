@@ -16,6 +16,26 @@ server:
   service:
     type: ClusterIP
 
+  # Built-in ingress instead of a standalone Ingress manifest applied
+  # imperatively after nginx-ingress comes up. Same path (/argocd), same
+  # self-signed TLS, same backend-protocol HTTPS — but the chart owns it,
+  # so it goes up and down with the ArgoCD helm_release.
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    path: /argocd
+    pathType: Prefix
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      cert-manager.io/cluster-issuer: "selfsigned-issuer"
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    tls: true
+    extraTls:
+      - secretName: argocd-tls-cert
+        hosts: []
+
 controller:
   resources:
     requests:

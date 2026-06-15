@@ -10,14 +10,12 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/REPLACE_OWNER/CloudOps_CRM.git
+    repoURL: https://github.com/Barak911/CloudOps_CRM.git
     targetRevision: main
     path: k8s/manifests
-    directory:
-      # external-secrets is bootstrap-only (rendered via envsubst before ESO
-      # is ready to consume it). karpenter-nodepool needs the Karpenter CRDs
-      # to exist first, so it is also bootstrap-time imperative.
-      exclude: '{external-secrets.yaml,karpenter-nodepool.yaml}'
+    # No excludes — external-secrets.yaml is plain YAML now (no envsubst);
+    # Karpenter NodePool/EC2NodeClass moved into Terraform so the chicken
+    # -and-egg with the Karpenter CRDs is gone too.
   destination:
     server: https://kubernetes.default.svc
   syncPolicy:

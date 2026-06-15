@@ -1,0 +1,34 @@
+# Root App-of-Apps.
+#
+# Terraform applies this single Application via kubectl_manifest after the
+# four substrate controllers (ArgoCD, ESO, cert-manager, Karpenter) are up.
+# ArgoCD then discovers everything in `k8s/argocd/apps/` and reconciles each
+# child Application — every workload, every cluster config, every overlay.
+#
+# Adding a new service means dropping a child Application YAML into apps/
+# and pushing. No Terraform change, no workflow change.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Barak911/CloudOps_CRM.git
+    targetRevision: main
+    path: k8s/argocd/apps
+    directory:
+      recurse: false
+      include: '*.yaml'
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      selfHeal: true
+      prune: true
+    syncOptions:
+      - ServerSideApply=true

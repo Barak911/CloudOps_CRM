@@ -133,10 +133,12 @@ elasticsearch:
   esJavaOpts: "-Xmx512m -Xms512m"
 
   secret:
-    enabled: true
-    # The chart generates a random password via randAlphaNum on each render.
-    # The ArgoCD Application uses ignoreDifferences on /data to prevent
-    # overwriting the bootstrap-created password with a new random one.
+    # Disabled — ExternalSecrets Operator materializes
+    # `elasticsearch-master-credentials` from AWS Secrets Manager before the
+    # StatefulSet starts. The chart no longer rotates the password on every
+    # render (the old `ignoreDifferences` workaround in the ArgoCD App is
+    # therefore obsolete, but harmless to leave in place).
+    enabled: false
 
   persistence:
     enabled: true

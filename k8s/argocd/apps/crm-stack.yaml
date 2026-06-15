@@ -17,7 +17,7 @@ metadata:
 spec:
   project: default
   sources:
-    - repoURL: https://github.com/REPLACE_OWNER/CloudOps_CRM.git
+    - repoURL: https://github.com/Barak911/CloudOps_CRM.git
       targetRevision: main
       path: k8s/crm-stack
       helm:
@@ -26,7 +26,7 @@ spec:
           # CI-owned image state. Overrides crm-app.image fields from the
           # umbrella values.yaml.
           - $values/k8s/values/image-state.yaml
-    - repoURL: https://github.com/REPLACE_OWNER/CloudOps_CRM.git
+    - repoURL: https://github.com/Barak911/CloudOps_CRM.git
       targetRevision: main
       ref: values
   destination:

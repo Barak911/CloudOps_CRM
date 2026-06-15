@@ -6,3 +6,20 @@ mongodb-2    Running ip-172-31-24-152.ec2.internal 172.31.31.52
 === Pods spread across 3 distinct nodes (anti-affinity) ===
        3
 === Replica set state via mongosh from PRIMARY ===
+mongodb-0.mongodb.crm.svc.cluster.local:27017  state=PRIMARY  health=1
+mongodb-1.mongodb.crm.svc.cluster.local:27017  state=SECONDARY  health=1
+mongodb-2.mongodb.crm.svc.cluster.local:27017  state=SECONDARY  health=1
+
+=== App round-trip ===
+POST /person/u-1 then GET:
+{
+    "_id": "6a2ef9b2165fe8654454ef7a",
+    "email": "a@test.com",
+    "name": "Alice",
+    "person_id": "u-1"
+}
+stats:
+{
+    "latest_entry_id": "6a2ef9b34fd070ad2ec44ea4",
+    "total_persons": 2
+}

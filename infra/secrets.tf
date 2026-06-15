@@ -10,6 +10,20 @@ resource "aws_secretsmanager_secret" "mongodb_credentials" {
   }
 }
 
+# Elasticsearch root credentials — materialized into the cluster by ExternalSecret
+# as `elasticsearch-master-credentials` (the Secret name the chart expects). On a
+# re-deploy ESO finds the existing Secret + the chart picks it up, so the bootstrap
+# workflow no longer has to pre-create credentials with kubectl.
+resource "aws_secretsmanager_secret" "elasticsearch_credentials" {
+  name                    = "${var.cluster_name}/elasticsearch-credentials"
+  description             = "Elasticsearch root credentials for CRM stack"
+  recovery_window_in_days = 0
+
+  tags = {
+    project = "CloudOps_CRM"
+  }
+}
+
 # Seed the secret with a generated password on first apply.
 # After creation, rotate the password in the AWS Console or via CI — Terraform
 # will NOT overwrite an existing secret value thanks to the lifecycle ignore.
@@ -23,6 +37,11 @@ resource "random_password" "mongodb_app" {
   special = false
 }
 
+resource "random_password" "elasticsearch_root" {
+  length  = 24
+  special = false
+}
+
 resource "aws_secretsmanager_secret_version" "mongodb_credentials" {
   secret_id = aws_secretsmanager_secret.mongodb_credentials.id
   secret_string = jsonencode({
@@ -30,6 +49,18 @@ resource "aws_secretsmanager_secret_version" "mongodb_credentials" {
     password     = random_password.mongodb_root.result
     app_username = "crm_app"
     app_password = random_password.mongodb_app.result
+  })
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "elasticsearch_credentials" {
+  secret_id = aws_secretsmanager_secret.elasticsearch_credentials.id
+  secret_string = jsonencode({
+    username = "elastic"
+    password = random_password.elasticsearch_root.result
   })
 
   lifecycle {
@@ -51,7 +82,10 @@ resource "aws_iam_policy" "external_secrets" {
           "secretsmanager:GetSecretValue",
           "secretsmanager:DescribeSecret"
         ]
-        Resource = aws_secretsmanager_secret.mongodb_credentials.arn
+        Resource = [
+          aws_secretsmanager_secret.mongodb_credentials.arn,
+          aws_secretsmanager_secret.elasticsearch_credentials.arn,
+        ]
       }
     ]
   })
