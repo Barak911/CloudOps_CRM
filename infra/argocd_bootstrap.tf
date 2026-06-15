@@ -61,9 +61,41 @@ resource "kubectl_manifest" "external_secrets_sa" {
   ]
 }
 
+# helm_release returns when the chart's Deployment is Ready — that does NOT
+# imply the CRDs the chart installs are Established by the kube-apiserver.
+# kubectl_manifest plan-time validation against the cluster API fails if the
+# CRD isn't Established yet. This null_resource gates the SecretStore behind
+# an explicit CRD-Established wait. Same pattern for any future CRD consumer.
+resource "null_resource" "wait_external_secrets_crds" {
+  triggers = {
+    helm_release_id = helm_release.external_secrets.id
+  }
+
+  provisioner "local-exec" {
+    command     = <<-EOT
+      set -e
+      aws eks update-kubeconfig --name "${module.eks.cluster_name}" --region "${var.aws_region}" --alias _bootstrap_kubeconfig
+      kubectl --context _bootstrap_kubeconfig wait --for=condition=Established \
+        crd/secretstores.external-secrets.io --timeout=120s
+      kubectl --context _bootstrap_kubeconfig wait --for=condition=Established \
+        crd/externalsecrets.external-secrets.io --timeout=120s
+    EOT
+    interpreter = ["bash", "-c"]
+  }
+
+  depends_on = [helm_release.external_secrets]
+}
+
 resource "kubectl_manifest" "aws_secrets_manager_store" {
+  # validate_schema=false bypasses the provider's client-side cluster
+  # discovery, which gets cached on first use and doesn't see CRDs added
+  # later in the same plan/apply (the SecretStore CRD comes from the
+  # external-secrets helm release earlier in the graph). Server-side apply
+  # to the API still validates correctly.
+  validate_schema = false
+
   yaml_body = <<-YAML
-    apiVersion: external-secrets.io/v1
+    apiVersion: external-secrets.io/v1beta1
     kind: SecretStore
     metadata:
       name: aws-secrets-manager
@@ -80,7 +112,7 @@ resource "kubectl_manifest" "aws_secrets_manager_store" {
   YAML
 
   depends_on = [
-    helm_release.external_secrets,
+    null_resource.wait_external_secrets_crds,
     kubectl_manifest.external_secrets_sa,
   ]
 }
@@ -95,7 +127,7 @@ resource "kubectl_manifest" "aws_secrets_manager_store" {
 #
 # resource "kubectl_manifest" "argocd_repo_credentials" {
 #   yaml_body = <<-YAML
-#     apiVersion: external-secrets.io/v1
+#     apiVersion: external-secrets.io/v1beta1
 #     kind: ExternalSecret
 #     metadata:
 #       name: argocd-repo-credentials

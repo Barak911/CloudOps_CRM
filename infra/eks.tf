@@ -42,11 +42,19 @@ module "eks" {
   # network rules, not documentation. CoreDNS and kube-proxy are pinned by
   # the addon's "most_recent = true" — swap to a fixed version_string for
   # production-grade upgrade control.
+  #
+  # `before_compute = true` is load-bearing: without it, the managed node
+  # group is created in parallel with the addons, and instances boot before
+  # vpc-cni is installed → kubelet starts with no pod networking → nodes
+  # never report Ready → node group times out at NodeCreationFailure after
+  # 30+ minutes. With before_compute the module's internal dep-graph holds
+  # the node group until the addons are ACTIVE.
   bootstrap_self_managed_addons = false
 
   cluster_addons = {
     vpc-cni = {
-      most_recent = true
+      most_recent    = true
+      before_compute = true
       # AmazonEKS_CNI_Policy is attached to the managed-node-group IAM role
       # by default, so no IRSA role is needed here.
       configuration_values = jsonencode({
@@ -56,10 +64,13 @@ module "eks" {
         }
       })
     }
-    coredns = {
-      most_recent = true
-    }
     kube-proxy = {
+      most_recent    = true
+      before_compute = true
+    }
+    coredns = {
+      # CoreDNS schedules ONTO nodes, so it can't be before_compute — it
+      # needs a node to run on. Reaches ACTIVE shortly after the node group.
       most_recent = true
     }
   }
