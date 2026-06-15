@@ -1,0 +1,48 @@
+=== Wave-Job refactor: end-to-end validated ===
+
+## terraform apply with wait-Job pattern (out-of-process readiness barrier)
+From empty cloud account -> 112 resources, no force-unlock needed.
+
+## Wait Jobs (substrate readiness, in-cluster kubectl wait)
+
+## ArgoCD apps
+NAME               SYNC STATUS   HEALTH STATUS
+crm-manifests      OutOfSync     Healthy
+crm-stack          Synced        Healthy
+prometheus-stack   Synced        Healthy
+root               Synced        Healthy
+
+## Pods by namespace
+  argocd             5/5 Running
+  cert-manager       3/3 Running
+  crm                10/11 Running
+  external-secrets   3/3 Running
+  ingress-nginx      1/1 Running
+  karpenter          2/2 Running
+  monitoring         8/8 Running
+
+## MongoDB ReplicaSet (rs.initiate fired automatically via Sync hook)
+mongodb-0.mongodb.crm.svc.cluster.local:27017 PRIMARY
+mongodb-1.mongodb.crm.svc.cluster.local:27017 SECONDARY
+mongodb-2.mongodb.crm.svc.cluster.local:27017 SECONDARY
+
+## rs.initiate Job logs
+Waiting for pod-0 to be reachable...
+Initiating replica set rs0...
+{ ok: 1 }
+Waiting for PRIMARY election...
+PRIMARY elected.
+Provisioning application user 'crm_app' on crm_db...
+App user created
+Replica set bootstrap complete.
+
+## CRUD via Ingress https://abd2499481bd346328e828e77c4b169f-4c13fafb2019b7e3.elb.us-east-1.amazonaws.com
+GET /ready:   {"database":"connected","service":"CRM API","status":"ready"}
+GET /stats:   {"latest_entry_id":"6a303eae5597cd9118cf228a","total_persons":1}
+GET /person/wave-job-validated:
+{
+    "_id": "6a303eae5597cd9118cf228a",
+    "email": "e@t.com",
+    "name": "E2E from refactor",
+    "person_id": "wave-job-validated"
+}
