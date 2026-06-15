@@ -5,10 +5,14 @@ metadata:
   namespace: {{ .Values.global.namespace }}
   labels:
     {{- include "crm-app.labels" . | nindent 4 }}
-  annotations:
-    # crm-app depends on the mongodb ReplicaSet existing AND rs.initiate
-    # having run. Wave 10 puts it after the rs-init Sync hook (wave 5).
-    argocd.argoproj.io/sync-wave: "10"
+  # No sync-wave on the Deployment. Putting just the Deployment at a
+  # higher wave (while Service/HPA/PDB stayed at default wave 0) caused
+  # ArgoCD to wait for wave 0 to be Healthy — but the HPA is Degraded
+  # until the Deployment exists, so wave 0 never reached Healthy and the
+  # Deployment never applied. Letting everything sync at wave 0 means
+  # crm-app pods crashloop briefly while mongo rs.initiate runs, then
+  # recover on their next restart. The rs-init Job (wave 5 Sync hook)
+  # still fires after wave 0 resources are applied.
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
