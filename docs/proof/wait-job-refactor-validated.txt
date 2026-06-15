@@ -1,0 +1,43 @@
+=== Live end-to-end proof — substrate via terraform, workloads via ArgoCD ===
+
+## ArgoCD applications
+NAME               SYNC STATUS   HEALTH STATUS
+crm-manifests      OutOfSync     Healthy
+crm-stack          OutOfSync     Progressing
+prometheus-stack   Synced        Healthy
+root               Synced        Progressing
+
+## Pods by namespace
+  argocd             5/5
+  cert-manager       3/3
+  crm                10/10
+  external-secrets   3/3
+  ingress-nginx      1/1
+  karpenter          2/2
+  monitoring         8/8
+
+## MongoDB ReplicaSet
+
+## ExternalSecrets
+NAME                               STORE                 REFRESH INTERVAL   STATUS         READY
+elasticsearch-master-credentials   aws-secrets-manager   1h                 SecretSynced   True
+mongodb-app-credentials            aws-secrets-manager   1h                 SecretSynced   True
+mongodb-credentials                aws-secrets-manager   1h                 SecretSynced   True
+
+## CRUD round-trip via Ingress
+Ingress: aafe53e6204bb40b582f9f98be647911-e7197aaa1d491898.elb.us-east-1.amazonaws.com
+GET /ready:  <html>
+<head><title>503 Service Temporarily Unavailable</title></head>
+<body>
+<center><h1>503 Service Temporarily Unavailable</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+POST + GET /person/refactor-proof:
+/stats: <html>
+<head><title>503 Service Temporarily Unavailable</title></head>
+<body>
+<center><h1>503 Service Temporarily Unavailable</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
