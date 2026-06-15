@@ -73,13 +73,6 @@ Plan creates ~110 resources: cluster, addons, node group, IAM, ECR, Karpenter in
 
 Expect 15–20 minutes total: ~10 minutes on the EKS control plane, ~5 on the managed node group, the rest in parallel. The Helm + wait-Job phase adds only a few minutes because the wait runs in-cluster (not in the terraform process — see [ARCHITECTURE.md → Wait-Job pattern](ARCHITECTURE.md#wait-job-pattern-out-of-process-readiness-barrier)). On a flaky network a re-`apply` resumes safely because the Jobs are idempotent.
 
-> Set these in your shell before long applies — they make the bring-up resilient to the Terraform Registry's intermittent CloudFront rate-limiting (HTTP 429) on a clean cache:
-> ```bash
-> export TF_PLUGIN_CACHE_DIR=~/.terraform.d/plugin-cache
-> export TF_REGISTRY_DISCOVERY_RETRY=10
-> mkdir -p "$TF_PLUGIN_CACHE_DIR"
-> ```
-
 ### 5. Connect to Cluster
 
 ```bash
