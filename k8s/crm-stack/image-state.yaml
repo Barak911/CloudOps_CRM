@@ -2,5 +2,5 @@
 # on every successful build. Do not hand-edit.
 crm-app:
   image:
-    tag: "v1.0.0-eb17f91"
-    digest: "sha256:0020ccde863c89e65e144de349b5a92d5ef161c7cef850a0cfddac01d0e9026f"
+    tag: "v1.0.0-30610fc"
+    digest: "sha256:d60f59d509de36b877c95c103d5b88e4b9a6bbcc2a2f467a6fe690d915bcc0f7"
