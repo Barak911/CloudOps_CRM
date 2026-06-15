@@ -58,7 +58,9 @@ healthCheck:
   readinessProbe:
     initialDelaySeconds: 10
     periodSeconds: 5
-    timeoutSeconds: 3
+    # mongosh cold-start regularly takes 4-6s on small nodes; bumping
+    # timeout to 10s eliminates the readiness probe warning spam.
+    timeoutSeconds: 10
 
 # Authentication — credentials are managed by ExternalSecrets Operator (see k8s/manifests/external-secrets.yaml)
 # To override for local dev, use: --set mongodb.auth.existingSecret="" --set mongodb.auth.rootPassword=<value>

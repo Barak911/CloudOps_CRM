@@ -191,11 +191,19 @@ spec:
       ports:
         - protocol: TCP
           port: 9300
-    # fluentd + kibana -> ES HTTP API
+    # fluentd + kibana -> ES HTTP API.
+    # Match BOTH label schemes — vendored charts use `app` while upstream
+    # charts use `app.kubernetes.io/name`. Two podSelector entries in the
+    # same `from:` block is an OR.
     - from:
         - podSelector:
             matchExpressions:
               - key: app.kubernetes.io/name
+                operator: In
+                values: [fluentd, kibana]
+        - podSelector:
+            matchExpressions:
+              - key: app
                 operator: In
                 values: [fluentd, kibana]
       ports:
