@@ -1,12 +1,6 @@
-# CI-owned image state for crm-app. THIS FILE IS WRITTEN BY CI ON EVERY
-# successful image build — do not hand-edit; changes will be overwritten
-# by the next CI run.
-#
-# The umbrella values.yaml declares the schema (repository / tag / digest);
-# this file supplies the concrete values for the current release. ArgoCD
-# layers this file on top of values.yaml via the crm-stack Application's
-# multi-source helm.valueFiles.
-#
-# First-bootstrap: this file is intentionally empty (apart from this
-# comment), so the umbrella values.yaml's image.tag is the fallback. After
-# the first CI run, the keys below are populated and override the umbrella.
+# CI-owned image state for crm-app. Written by .github/workflows/ci.yml
+# on every successful build. Do not hand-edit.
+crm-app:
+  image:
+    tag: "v1.0.0-aabe5dc"
+    digest: "sha256:32ad06828905585a653820d6798eba41e6cb2f4e8bbbe9b66628d21f9fec5549"
