@@ -11,20 +11,23 @@ metadata:
   labels:
     {{- include "mongodb.labels" . | nindent 4 }}
   annotations:
-    # ArgoCD-native annotations ONLY. Previously also carried
-    # `helm.sh/hook: post-install,post-upgrade`, but ArgoCD interprets
-    # that as PostSync (mapping rule baked into the helm integration)
-    # which then takes precedence over an explicit
-    # `argocd.argoproj.io/hook: Sync` annotation. The result: ArgoCD
-    # would silently treat the Job as a PostSync hook, never fire it
-    # (because crm-app stays Degraded until rs is initiated, so the
-    # Application never reaches Healthy, so PostSync never runs), and
-    # the rest of the platform deadlocks.
+    # ArgoCD-native Sync hook at wave 0 (default). Earlier attempts put
+    # this at sync-wave 5 to "run after the StatefulSet" — but ArgoCD
+    # only fires wave 5 once wave 0 is HEALTHY, and crm-app's wave-0
+    # Deployment can never reach Healthy without rs.initiate having
+    # already run. Classic deadlock.
     #
-    # The lesson: don't carry both helm.sh/hook and argocd.argoproj.io/hook
-    # on the same manifest under ArgoCD.
+    # No wave annotation = wave 0 = fires alongside everything else.
+    # The Job's own bash loop (`kubectl wait --for=condition=Ready
+    # pod/elasticsearch-master-0`, then `mongosh --eval "rs.initiate(...)"`)
+    # handles the timing internally — it polls mongo until it's
+    # reachable, then runs rs.initiate, then provisions the app user.
+    #
+    # helm.sh/hook annotations dropped: ArgoCD's helm integration
+    # converts `helm.sh/hook: post-install` to PostSync, which takes
+    # precedence over an explicit `argocd.argoproj.io/hook: Sync` on
+    # the same resource. Don't mix them under ArgoCD.
     "argocd.argoproj.io/hook": Sync
-    "argocd.argoproj.io/sync-wave": "5"
     "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
 spec:
   backoffLimit: 6
