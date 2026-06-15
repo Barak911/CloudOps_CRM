@@ -1,12 +1,16 @@
 # ArgoCD Application: CRM Umbrella Chart (crm-app + mongodb + EFK)
 #
-# Image state is segregated: CI only touches k8s/values/image-state.yaml,
-# never the umbrella values.yaml. This way the only file that changes from
-# a `[skip ci]` bot commit is a clearly-CI-owned state file; review of
-# the umbrella values.yaml stays clean of release noise, and the sed/regex
-# editing has nothing else in the file to clobber.
+# Single-source on purpose. The prior multi-source layout used a $values
+# ref pointing back to this same repo, which triggers a known ArgoCD
+# revision-mismatch race when both sources reference targetRevision=main
+# (the two sources can resolve to different commits between refreshes
+# and the comparison fails with `cannot reference a different revision
+# of the same repository`). The fix is to keep all value files inside
+# the chart's path so the single source resolves them itself.
 #
-# Multi-source: local Helm chart + separate values ref (consistent with other apps)
+# image-state.yaml stays CI-owned: ci.yml writes that one file with the
+# new tag + sha256 digest after each successful build. Reviewing the
+# umbrella values.yaml therefore still stays clean of release noise.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -16,19 +20,16 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
-  sources:
-    - repoURL: https://github.com/Barak911/CloudOps_CRM.git
-      targetRevision: main
-      path: k8s/crm-stack
-      helm:
-        valueFiles:
-          - $values/k8s/values/values-ingress.yaml
-          # CI-owned image state. Overrides crm-app.image fields from the
-          # umbrella values.yaml.
-          - $values/k8s/values/image-state.yaml
-    - repoURL: https://github.com/Barak911/CloudOps_CRM.git
-      targetRevision: main
-      ref: values
+  source:
+    repoURL: https://github.com/Barak911/CloudOps_CRM.git
+    targetRevision: main
+    path: k8s/crm-stack
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-ingress.yaml
+        # CI-owned image state. Overrides crm-app.image fields from values.yaml.
+        - image-state.yaml
   destination:
     server: https://kubernetes.default.svc
     namespace: crm
