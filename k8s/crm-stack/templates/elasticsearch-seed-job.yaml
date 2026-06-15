@@ -33,13 +33,14 @@ spec:
     metadata:
       labels:
         {{- include "crm-stack.selectorLabels" . | nindent 8 }}
-        # Inherit `app: elasticsearch-master` so the existing NetworkPolicies
-        # in k8s/manifests/networkpolicies.yaml admit this pod for egress
-        # (allow-fluentd-kibana-es-egress) and ES ingress
-        # (allow-elasticsearch-ingress). Same trick the mongo rs-init Job
-        # uses with `app: mongodb`. The pod is short-lived bootstrap and
-        # genuinely IS part of the ES data-plane initialization.
-        app: elasticsearch-master
+        # Pod identified solely by `job: elasticsearch-seed`. Initial
+        # attempt added `app: elasticsearch-master` to inherit the
+        # existing ES NetworkPolicy allows, but the ES PDB also selects
+        # on that label — it then sees the Job and emits
+        # CalculateExpectedPodCountFailed every reconcile because Jobs
+        # have no scale subresource. Cleaner to keep the pod's identity
+        # honest and add a dedicated allow-elasticsearch-seed netpol
+        # (k8s/manifests/networkpolicies.yaml).
         job: elasticsearch-seed
     spec:
       restartPolicy: OnFailure

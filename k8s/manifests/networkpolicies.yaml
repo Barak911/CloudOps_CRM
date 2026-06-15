@@ -191,14 +191,10 @@ spec:
       ports:
         - protocol: TCP
           port: 9300
-    # fluentd + kibana + the chart-baked ES seed Job -> ES HTTP API.
+    # fluentd + kibana -> ES HTTP API.
     # Match BOTH label schemes — vendored charts use `app` while upstream
     # charts use `app.kubernetes.io/name`. Two podSelector entries in the
     # same `from:` block is an OR.
-    #
-    # `elasticsearch-master` is included so the seed Job (which carries
-    # `app: elasticsearch-master` to inherit the egress allow above) can
-    # PUT the index template + ingest pipeline through the HTTP API.
     - from:
         - podSelector:
             matchExpressions:
@@ -209,7 +205,19 @@ spec:
             matchExpressions:
               - key: app
                 operator: In
-                values: [fluentd, kibana, elasticsearch-master]
+                values: [fluentd, kibana]
+      ports:
+        - protocol: TCP
+          port: 9200
+    # The chart-baked ES seed Job (k8s/crm-stack/templates/
+    # elasticsearch-seed-job.yaml) -> ES HTTP API. Separate `from:` block
+    # so the seed pod identifies itself by its job label and doesn't have
+    # to impersonate `app: elasticsearch-master` (which would pull it
+    # into the ES PDB selector).
+    - from:
+        - podSelector:
+            matchLabels:
+              job: elasticsearch-seed
       ports:
         - protocol: TCP
           port: 9200
@@ -269,6 +277,24 @@ spec:
       - key: app.kubernetes.io/name
         operator: In
         values: [fluentd, kibana, elasticsearch]
+  policyTypes: [Egress]
+  egress:
+    - {}
+---
+# Chart-baked Elasticsearch seed Job (k8s/crm-stack/templates/
+# elasticsearch-seed-job.yaml). Short-lived bootstrap pod that polls ES
+# health then PUTs the index template + ingest pipeline. Needs egress to
+# ES + DNS; allow-all is fine for the same reason as the data-plane rule
+# above (and shorter-lived anyway).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-elasticsearch-seed-egress
+  namespace: crm
+spec:
+  podSelector:
+    matchLabels:
+      job: elasticsearch-seed
   policyTypes: [Egress]
   egress:
     - {}
