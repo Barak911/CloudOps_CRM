@@ -224,13 +224,32 @@ spec:
         - protocol: TCP
           port: 5601
 ---
-# Fluentd + kibana need to talk to ES + cluster API + Secrets Manager (egress).
+# Fluentd + kibana + es need to talk to ES + cluster API + Secrets Manager (egress).
 # A simple allow-all egress on the data-plane pods is pragmatic; the alternative
 # is enumerating every external endpoint and breaking on every chart update.
+#
+# Selector uses both `app` (set by our vendored charts) and `app.kubernetes.io/name`
+# (set by some upstream chart versions) so a chart label-scheme change can't
+# silently drop kube-api egress and break the Kibana token initContainer.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-fluentd-kibana-es-egress
+  namespace: crm
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [fluentd, kibana, elasticsearch-master]
+  policyTypes: [Egress]
+  egress:
+    - {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-fluentd-kibana-es-egress-alt
   namespace: crm
 spec:
   podSelector:

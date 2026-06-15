@@ -30,7 +30,13 @@ resource "helm_release" "argocd" {
   wait    = true
   timeout = 600
 
-  depends_on = [module.eks]
+  # nginx-ingress must be Ready first: the ArgoCD chart now creates an
+  # Ingress (server.ingress.enabled=true), and the nginx admission webhook
+  # rejects the Ingress until the controller is up.
+  depends_on = [
+    module.eks,
+    helm_release.nginx_ingress,
+  ]
 }
 
 # -----------------------------------------------------------------------------

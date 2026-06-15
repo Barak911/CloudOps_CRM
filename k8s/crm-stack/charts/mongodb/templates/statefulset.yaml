@@ -50,7 +50,10 @@ spec:
             - -c
             - |
               chown -R 999:999 /data/db
-              chmod 700 /data/db
+              # No chmod: the mongod container drops ALL capabilities (incl
+              # DAC_OVERRIDE), so its root entrypoint can't even read a
+              # mode-700 dir before it switches to the mongo user. Leave at
+              # default 0775; chown alone is enough for mongod to write.
           securityContext:
             runAsUser: 0
             capabilities:
