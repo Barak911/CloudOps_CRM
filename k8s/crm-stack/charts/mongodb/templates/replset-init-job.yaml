@@ -11,20 +11,21 @@ metadata:
   labels:
     {{- include "mongodb.labels" . | nindent 4 }}
   annotations:
-    # ArgoCD `Sync` hook (not `PostSync`). PostSync waits for the whole
-    # Application to be Healthy — but crm-app stays Degraded until rs
-    # initiated, so PostSync never fires. Sync runs in the main sync
-    # phase ordered by sync-wave: mongo StatefulSet is wave 0 (default),
-    # this Job is wave 5 (after mongo pods exist), crm-app is wave 10
-    # (after rs is initiated and mongo pods become Ready).
+    # ArgoCD-native annotations ONLY. Previously also carried
+    # `helm.sh/hook: post-install,post-upgrade`, but ArgoCD interprets
+    # that as PostSync (mapping rule baked into the helm integration)
+    # which then takes precedence over an explicit
+    # `argocd.argoproj.io/hook: Sync` annotation. The result: ArgoCD
+    # would silently treat the Job as a PostSync hook, never fire it
+    # (because crm-app stays Degraded until rs is initiated, so the
+    # Application never reaches Healthy, so PostSync never runs), and
+    # the rest of the platform deadlocks.
+    #
+    # The lesson: don't carry both helm.sh/hook and argocd.argoproj.io/hook
+    # on the same manifest under ArgoCD.
     "argocd.argoproj.io/hook": Sync
     "argocd.argoproj.io/sync-wave": "5"
     "argocd.argoproj.io/hook-delete-policy": BeforeHookCreation
-    # Helm hooks kept for the (now-rare) path of `helm install` from
-    # outside ArgoCD; harmless if ArgoCD is the installer.
-    "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "5"
-    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   backoffLimit: 6
   ttlSecondsAfterFinished: 600
