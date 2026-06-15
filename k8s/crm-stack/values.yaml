@@ -140,6 +140,21 @@ elasticsearch:
     # therefore obsolete, but harmless to leave in place).
     enabled: false
 
+  # The chart only wires ELASTIC_PASSWORD when secret.enabled is true. With
+  # secret.enabled=false we feed it explicitly from the ESO-materialized
+  # Secret via extraEnvs.
+  extraEnvs:
+    - name: ELASTIC_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: elasticsearch-master-credentials
+          key: password
+    - name: ELASTIC_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: elasticsearch-master-credentials
+          key: username
+
   persistence:
     enabled: true
 
