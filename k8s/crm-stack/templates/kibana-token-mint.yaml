@@ -1,174 +1,44 @@
 # Kibana service-account token bootstrap.
 #
-# The upstream Kibana chart references the secret `crm-stack-kibana-es-token`
-# via env (key: token, optional: false), so the Kibana pod fails
-# `CreateContainerConfigError` until the secret exists. The token is minted
-# from a *running* Elasticsearch instance via the security API — meaning
-# the chart can't auto-generate it; it can only exist after ES is up.
+# Co-located with the workload that needs the token: an initContainer on
+# the Kibana pod itself mints the token from a running Elasticsearch and
+# materializes the secret Kibana's main container reads from.
 #
-# This Job:
-#   1. Waits for elasticsearch-master-0 to be Ready (mongosh-style busy wait,
-#      bounded by activeDeadlineSeconds).
-#   2. Calls POST /_security/service/elastic/kibana/credential/token/<name>
-#      against the ES API with the root credentials ESO has materialized
-#      into `elasticsearch-master-credentials`.
-#   3. Creates the `crm-stack-kibana-es-token` secret with the resulting token.
+# Previously this was a separate Helm/ArgoCD-hook Job. ArgoCD's selfHeal
+# kept pruning it (hook-resource pruning interacts badly with re-syncs);
+# the structural fix is to make the consumer responsible for its own
+# bootstrap data. No external Job to manage, no hook timing window.
 #
-# It runs as a Helm + ArgoCD hook so it fires on both imperative `helm
-# install` AND ArgoCD reconcile. Idempotent: if the token secret already
-# exists with a valid value, leave it alone (token rotation would require
-# the Kibana pod to restart, which is intentionally out of scope here).
-
+# This file defines the RBAC the initContainer needs (the Kibana pod runs
+# under `kibana-mint` SA, set via .Values.kibana.serviceAccount). The
+# initContainer itself is injected into the Kibana pod via
+# .Values.kibana.extraInitContainers in the umbrella values.yaml.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: kibana-token-mint
+  name: kibana-mint
   namespace: {{ .Values.global.namespace }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "1"
-    helm.sh/hook-delete-policy: hook-succeeded
-    argocd.argoproj.io/hook: PostSync
-    argocd.argoproj.io/hook-delete-policy: HookSucceeded
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: kibana-token-mint
+  name: kibana-mint
   namespace: {{ .Values.global.namespace }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "1"
-    helm.sh/hook-delete-policy: hook-succeeded
-    argocd.argoproj.io/hook: PostSync
-    argocd.argoproj.io/hook-delete-policy: HookSucceeded
 rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "create", "patch", "update"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: kibana-token-mint
+  name: kibana-mint
   namespace: {{ .Values.global.namespace }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "1"
-    helm.sh/hook-delete-policy: hook-succeeded
-    argocd.argoproj.io/hook: PostSync
-    argocd.argoproj.io/hook-delete-policy: HookSucceeded
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: kibana-token-mint
+  name: kibana-mint
 subjects:
   - kind: ServiceAccount
-    name: kibana-token-mint
+    name: kibana-mint
     namespace: {{ .Values.global.namespace }}
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: kibana-token-mint
-  namespace: {{ .Values.global.namespace }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "5"
-    helm.sh/hook-delete-policy: before-hook-creation
-    argocd.argoproj.io/hook: PostSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
-spec:
-  backoffLimit: 6
-  activeDeadlineSeconds: 900
-  ttlSecondsAfterFinished: 600
-  template:
-    metadata:
-      labels:
-        app: kibana-token-mint
-    spec:
-      serviceAccountName: kibana-token-mint
-      restartPolicy: OnFailure
-      containers:
-        - name: mint
-          # bitnami/kubectl bundles kubectl + a recent curl + bash. ~30MB.
-          image: bitnami/kubectl:1.31
-          env:
-            - name: NAMESPACE
-              value: {{ .Values.global.namespace | quote }}
-            - name: ES_HOST
-              value: "elasticsearch-master.{{ .Values.global.namespace }}.svc.cluster.local"
-            - name: TOKEN_SECRET_NAME
-              value: "crm-stack-kibana-es-token"
-            - name: TOKEN_NAME
-              value: "crm-stack-kibana"
-            - name: ES_USERNAME
-              valueFrom:
-                secretKeyRef:
-                  name: elasticsearch-master-credentials
-                  key: username
-            - name: ES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: elasticsearch-master-credentials
-                  key: password
-          command:
-            - bash
-            - -c
-            - |
-              set -euo pipefail
-
-              echo "Waiting for elasticsearch-master-0 to be Ready..."
-              kubectl wait --for=condition=Ready pod/elasticsearch-master-0 \
-                -n "$NAMESPACE" --timeout=600s
-
-              echo "Probing ES API on https://$ES_HOST:9200..."
-              # Quick liveness probe so we fail fast if auth is wrong (vs.
-              # silently hanging on the token mint call).
-              until curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" \
-                "https://$ES_HOST:9200/_cluster/health?wait_for_status=yellow&timeout=30s" \
-                >/dev/null; do
-                echo "  ES not responding yet, retry in 5s..."
-                sleep 5
-              done
-
-              # Idempotency: if the token Secret already exists with non-empty
-              # data, treat that as success and exit. Rotating the token would
-              # require deleting both the ES-side credential and the K8s Secret,
-              # then bouncing Kibana — intentionally out of scope here.
-              if EXISTING=$(kubectl get secret "$TOKEN_SECRET_NAME" -n "$NAMESPACE" \
-                  -o jsonpath='{.data.token}' 2>/dev/null) && [ -n "$EXISTING" ]; then
-                echo "Token Secret already exists; nothing to do."
-                exit 0
-              fi
-
-              # Delete any stale ES-side credential of the same name (idempotent
-              # re-deploy from a clean K8s Secret state).
-              curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" -X DELETE \
-                "https://$ES_HOST:9200/_security/service/elastic/kibana/credential/token/$TOKEN_NAME" \
-                >/dev/null 2>&1 || true
-
-              echo "Minting Kibana service-account token..."
-              TOKEN=$(curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" -X POST \
-                "https://$ES_HOST:9200/_security/service/elastic/kibana/credential/token/$TOKEN_NAME" \
-                | python3 -c "import sys,json; print(json.load(sys.stdin)['token']['value'])")
-
-              if [ -z "$TOKEN" ]; then
-                echo "ERROR: empty token from ES API"
-                exit 1
-              fi
-
-              kubectl create secret generic "$TOKEN_SECRET_NAME" \
-                --from-literal=token="$TOKEN" \
-                -n "$NAMESPACE" \
-                --dry-run=client -o yaml | kubectl apply -f -
-
-              # Restart Kibana so it picks up the new token. On a fresh install
-              # the deployment may not exist yet — ignore.
-              kubectl rollout restart deployment crm-stack-kibana \
-                -n "$NAMESPACE" 2>/dev/null || true
-
-              echo "Kibana ES token minted and secret applied."

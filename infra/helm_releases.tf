@@ -96,6 +96,36 @@ resource "kubectl_manifest" "selfsigned_clusterissuer" {
 }
 
 # -----------------------------------------------------------------------------
+# Nginx Ingress Controller (substrate — every Application's Ingress depends
+# on the IngressClass + the NLB this provisions).
+# -----------------------------------------------------------------------------
+#
+# Was an ArgoCD child app, moved here because the chart's pre-install hook
+# (admission-create Job) interacts badly with ArgoCD's PreSync semantics —
+# the hook completes successfully in AWS but ArgoCD's view stays stuck on
+# "waiting for completion of hook batch/Job/..." forever. Installing via
+# terraform's helm provider sidesteps ArgoCD's hook handling entirely,
+# which is the right tradeoff anyway: nginx-ingress is platform substrate
+# (every other workload depends on it), same category as ArgoCD itself.
+
+resource "helm_release" "nginx_ingress" {
+  name             = "nginx-ingress"
+  namespace        = "ingress-nginx"
+  create_namespace = true
+
+  repository = "https://kubernetes.github.io/ingress-nginx"
+  chart      = "ingress-nginx"
+  version    = "4.14.3"
+
+  values = [file("${path.module}/../k8s/values/nginx-ingress-values.yaml")]
+
+  wait    = true
+  timeout = 600
+
+  depends_on = [module.eks]
+}
+
+# -----------------------------------------------------------------------------
 # Karpenter (burst node autoscaler — see infra/karpenter.tf for IAM + SQS)
 # -----------------------------------------------------------------------------
 

@@ -36,11 +36,33 @@ spec:
       {{- end }}
       securityContext:
         fsGroup: 999
-      {{- if .Values.replicaSet.enabled }}
-      # The Secret's keyFile entry needs mode 0400 owned by the mongodb
-      # user (999). Without this initContainer mongod refuses to start
-      # ("permissions on /etc/mongodb-keyfile are too open").
       initContainers:
+        # Chown the data dir to mongod's UID:GID on every pod start.
+        # fsGroup only sets group-write at mount time; it doesn't change
+        # ownership of files written by *previous* pods (e.g. if the
+        # StatefulSet was once deployed without a uid override and wrote
+        # files as root, the new non-root pod can't read them).
+        # Idempotent: chowning an already-correct tree is cheap.
+        - name: data-perms
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              chown -R 999:999 /data/db
+              chmod 700 /data/db
+          securityContext:
+            runAsUser: 0
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER", "DAC_OVERRIDE"]
+          volumeMounts:
+            - name: {{ include "mongodb.fullname" . }}-data
+              mountPath: /data/db
+        {{- if .Values.replicaSet.enabled }}
+        # The Secret's keyFile entry needs mode 0400 owned by the mongodb
+        # user (999). Without this initContainer mongod refuses to start
+        # ("permissions on /etc/mongodb-keyfile are too open").
         - name: keyfile-perms
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           command:
@@ -61,7 +83,7 @@ spec:
               readOnly: true
             - name: keyfile
               mountPath: /keyfile
-      {{- end }}
+        {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

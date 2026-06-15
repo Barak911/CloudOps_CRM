@@ -196,6 +196,10 @@ kibana:
   enabled: true
   replicas: 1
 
+  # Pod runs under our umbrella-created SA (see templates/kibana-token-mint.yaml).
+  # That SA has a Role bound that lets the initContainer create the ES token Secret.
+  serviceAccount: kibana-mint
+
   resources:
     requests:
       cpu: "100m"
@@ -213,6 +217,69 @@ kibana:
 
   # Kibana will use chart-generated elasticsearch-master-certs secret
   # No custom configuration needed - chart handles it automatically
+
+  # Mint the ES service-account token IN the Kibana pod, not via a sidecar
+  # Job. The initContainer:
+  #   - waits for elasticsearch-master-0 to be Ready
+  #   - calls the ES security API with the root creds ESO materialized
+  #   - creates the `crm-stack-kibana-es-token` Secret the chart's main
+  #     container then reads via env (envFrom secretKeyRef)
+  # Idempotent: skips if the Secret already exists with a non-empty token.
+  extraInitContainers:
+    - name: mint-es-token
+      image: alpine/k8s:1.31.0
+      env:
+        - name: NAMESPACE
+          value: crm
+        - name: ES_HOST
+          value: "elasticsearch-master.crm.svc.cluster.local"
+        - name: TOKEN_SECRET_NAME
+          value: "crm-stack-kibana-es-token"
+        - name: TOKEN_NAME
+          value: "crm-stack-kibana"
+        - name: ES_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-master-credentials
+              key: username
+        - name: ES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-master-credentials
+              key: password
+      command:
+        - bash
+        - -c
+        - |
+          set -euo pipefail
+          if EXISTING=$(kubectl get secret "$TOKEN_SECRET_NAME" -n "$NAMESPACE" \
+              -o jsonpath='{.data.token}' 2>/dev/null) && [ -n "$EXISTING" ]; then
+            echo "Token Secret already exists; nothing to mint."
+            exit 0
+          fi
+          echo "Waiting for elasticsearch-master-0 to be Ready..."
+          kubectl wait --for=condition=Ready pod/elasticsearch-master-0 \
+            -n "$NAMESPACE" --timeout=600s
+          echo "Probing ES API..."
+          until curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" \
+            "https://$ES_HOST:9200/_cluster/health?wait_for_status=yellow&timeout=30s" \
+            >/dev/null; do
+            sleep 5
+          done
+          # Delete any stale ES-side credential of the same name
+          curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" -X DELETE \
+            "https://$ES_HOST:9200/_security/service/elastic/kibana/credential/token/$TOKEN_NAME" \
+            >/dev/null 2>&1 || true
+          echo "Minting token..."
+          TOKEN=$(curl -sf -k -u "$ES_USERNAME:$ES_PASSWORD" -X POST \
+            "https://$ES_HOST:9200/_security/service/elastic/kibana/credential/token/$TOKEN_NAME" \
+            | jq -r '.token.value')
+          [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ]
+          kubectl create secret generic "$TOKEN_SECRET_NAME" \
+            --from-literal=token="$TOKEN" \
+            -n "$NAMESPACE" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          echo "Token Secret materialized; main container can start."
 
   readinessProbe:
     initialDelaySeconds: 60
