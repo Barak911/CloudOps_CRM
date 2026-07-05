@@ -345,7 +345,10 @@ resource "helm_release" "karpenter" {
 
   repository = "oci://public.ecr.aws/karpenter"
   chart      = "karpenter"
-  version    = "1.1.1"
+  # Must move in lockstep with cluster_version — each Karpenter minor
+  # supports a narrow k8s range (1.1.x tops out at k8s 1.31). 1.12.x
+  # covers k8s 1.34; NodePool/EC2NodeClass stay on the v1 API.
+  version = "1.12.1"
 
   set {
     name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"

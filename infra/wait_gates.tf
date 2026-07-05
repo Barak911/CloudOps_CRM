@@ -19,7 +19,7 @@
 locals {
   # All wait Jobs run kubectl from the same image so any future kubectl
   # version bump is one-line. Pinned, not floating.
-  wait_image = "registry.k8s.io/kubectl:v1.31.0"
+  wait_image = "registry.k8s.io/kubectl:v1.34.1"
 }
 
 resource "kubernetes_namespace_v1" "tf_bootstrap" {
@@ -29,7 +29,7 @@ resource "kubernetes_namespace_v1" "tf_bootstrap" {
       "managed-by" = "terraform"
     }
     # NO `pod-security.kubernetes.io/enforce: restricted` here. The wait
-    # Jobs use `registry.k8s.io/kubectl:v1.31.0` straight from upstream;
+    # Jobs use `registry.k8s.io/kubectl:v1.34.1` straight from upstream;
     # adding a securityContext to every wait Job (runAsNonRoot + drop
     # ALL caps + seccompProfile RuntimeDefault) just to make the PSA
     # restricted profile happy bloats each Job for no real gain — these

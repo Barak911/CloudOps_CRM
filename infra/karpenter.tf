@@ -182,6 +182,9 @@ resource "aws_iam_policy" "karpenter_controller" {
           "ec2:DescribeSpotPriceHistory",
           "ec2:DescribeSubnets",
           "ec2:DescribeAvailabilityZones",
+          # Required since Karpenter 1.3 (capacity-reservation support) —
+          # the controller reconciles reservations even when none are used.
+          "ec2:DescribeCapacityReservations",
         ]
       },
       {

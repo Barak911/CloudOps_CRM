@@ -4,7 +4,7 @@ Terraform code for provisioning AWS infrastructure for the CRM application.
 
 ## Components
 
-- **EKS Cluster** -- Kubernetes 1.31 with managed node groups (t3a.medium, ON_DEMAND), public endpoint (restrict via `cluster_endpoint_public_access_cidrs`)
+- **EKS Cluster** -- Kubernetes 1.34 with managed node groups (t3a.medium, ON_DEMAND), public endpoint (restrict via `cluster_endpoint_public_access_cidrs`)
 - **Custom VPC** -- Private subnets across 3 AZs + single NAT (default-on; set `use_custom_vpc=false` to fall back to the AWS default VPC)
 - **ECR Repository** -- Container registry with immutable tags and scan-on-push
 - **GitHub OIDC Roles (split)** -- `github-actions-bootstrap` (cluster-admin, env-gated) and `github-actions-ci` (ECR push only, refs/heads/main-pinned)
@@ -60,7 +60,7 @@ cluster_endpoint_public_access_cidrs = ["0.0.0.0/0"]  # restrict for real prod
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Kubernetes Version | 1.31 | EKS cluster version |
+| Kubernetes Version | 1.34 | EKS cluster version |
 | Node Instance Type | t3a.medium | Cost-optimized |
 | Capacity Type | ON_DEMAND | Reliable availability |
 | Node Scaling | 1-2 nodes | Auto-scaling range |

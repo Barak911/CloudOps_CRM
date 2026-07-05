@@ -4,3 +4,29 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+
+  # Terraform providers + modules (infra/). Catches provider majors and the
+  # terraform-aws-modules/eks module drifting behind releases.
+  - package-ecosystem: "terraform"
+    directory: "/infra"
+    schedule:
+      interval: "weekly"
+
+  # App base image (python:X-slim in the multi-stage Dockerfile).
+  - package-ecosystem: "docker"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+
+  # Python dependencies (Flask, PyMongo, gunicorn, prometheus-client).
+  - package-ecosystem: "pip"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+
+# NOT covered by Dependabot (no helm ecosystem support): the chart versions
+# pinned in infra/helm_releases.tf (argo-cd, external-secrets, cert-manager,
+# ingress-nginx, karpenter) and the EKS addon versions in infra/eks.tf /
+# infra/ebs-csi-driver.tf. Those are bumped deliberately with the cluster
+# version — procedure in docs/runbooks/eks-upgrade.md. (Renovate would cover
+# helm_release versions if automated tracking becomes worth it.)

@@ -11,9 +11,9 @@ variable "cluster_name" {
 }
 
 variable "cluster_version" {
-  description = "Kubernetes version for EKS cluster"
+  description = "Kubernetes version for EKS cluster. Keep this on a STANDARD_SUPPORT version — extended support bills ~6x for the control plane. Check live: aws eks describe-cluster-versions"
   type        = string
-  default     = "1.31"
+  default     = "1.34"
 }
 
 variable "excluded_availability_zones" {

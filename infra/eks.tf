@@ -39,9 +39,11 @@ module "eks" {
 
   # Managed addons. VPC CNI runs in NetworkPolicy enforcement mode so the
   # NetworkPolicy resources in k8s/manifests/networkpolicies.yaml are real
-  # network rules, not documentation. CoreDNS and kube-proxy are pinned by
-  # the addon's "most_recent = true" — swap to a fixed version_string for
-  # production-grade upgrade control.
+  # network rules, not documentation. Addon versions are PINNED to the AWS
+  # defaults for the cluster_version (queried live via
+  # `aws eks describe-addon-versions --kubernetes-version <v>`) so two
+  # applies a month apart produce the same cluster — bump them together
+  # with cluster_version per docs/runbooks/eks-upgrade.md.
   #
   # `before_compute = true` is load-bearing: without it, the managed node
   # group is created in parallel with the addons, and instances boot before
@@ -53,7 +55,7 @@ module "eks" {
 
   cluster_addons = {
     vpc-cni = {
-      most_recent    = true
+      addon_version  = "v1.21.2-eksbuild.2" # default for 1.34
       before_compute = true
       # AmazonEKS_CNI_Policy is attached to the managed-node-group IAM role
       # by default, so no IRSA role is needed here.
@@ -65,13 +67,13 @@ module "eks" {
       })
     }
     kube-proxy = {
-      most_recent    = true
+      addon_version  = "v1.34.6-eksbuild.11" # default for 1.34
       before_compute = true
     }
     coredns = {
       # CoreDNS schedules ONTO nodes, so it can't be before_compute — it
       # needs a node to run on. Reaches ACTIVE shortly after the node group.
-      most_recent = true
+      addon_version = "v1.12.4-eksbuild.17" # default for 1.34
     }
   }
 

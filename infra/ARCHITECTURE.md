@@ -66,7 +66,7 @@ CloudOps_CRM/
 AWS Account
   Custom VPC (default — use_custom_vpc=true)
     Private subnets (3 AZs) + single NAT
-    EKS Cluster (Kubernetes 1.31)
+    EKS Cluster (Kubernetes 1.34)
       Managed addons: vpc-cni (NetworkPolicy enabled),
                       coredns, kube-proxy
       Managed Node Group: 3 x t3a.medium (ON_DEMAND) — baseline
