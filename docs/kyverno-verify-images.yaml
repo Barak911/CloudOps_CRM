@@ -1,0 +1,56 @@
+# STAGED — NOT applied by ArgoCD (lives in docs/, not k8s/manifests/, on
+# purpose: crm-manifests syncs that whole directory).
+#
+# Closes the supply-chain loop: CI cosign-signs every image it builds, but
+# nothing verifies signatures at admission — so today the signing is
+# write-only. This policy makes unsigned images unschedulable in `crm`.
+#
+# Why it isn't wired into the bootstrap yet: an admission webhook that
+# intercepts every pod-create is the highest-blast-radius component you can
+# add to a cluster, and it must be validated against a live bootstrap
+# (webhook ordering vs ArgoCD sync waves, failurePolicy behavior when the
+# controller itself is starting) before it gates anything. Enabling it blind
+# would risk the one property this repo proves: clean apply from an empty
+# account.
+#
+# To enable (after a live validation pass):
+#   helm install kyverno kyverno/kyverno -n kyverno --create-namespace \
+#     --version <pin-me>
+#   kubectl apply -f docs/kyverno-verify-images.yaml
+#
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-crm-image-signatures
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  # Fail-closed for the crm namespace only: a Kyverno outage must not be able
+  # to block kube-system or the bootstrap machinery.
+  failurePolicy: Fail
+  rules:
+    - name: require-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [crm]
+      verifyImages:
+        - imageReferences:
+            - "*.dkr.ecr.us-east-1.amazonaws.com/crm-app*"
+          attestors:
+            - entries:
+                - keyless:
+                    # The exact identity CI signs with: this workflow, on main.
+                    subject: "https://github.com/Barak911/CloudOps_CRM/.github/workflows/ci.yml@refs/heads/main"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          # Require the SBOM attestation produced in CI alongside the signature.
+          attestations:
+            - type: https://spdx.dev/Document
+              attestors:
+                - entries:
+                    - keyless:
+                        subject: "https://github.com/Barak911/CloudOps_CRM/.github/workflows/ci.yml@refs/heads/main"
+                        issuer: "https://token.actions.githubusercontent.com"
