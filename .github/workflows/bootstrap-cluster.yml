@@ -83,8 +83,11 @@ jobs:
             sleep 20
           done
 
-          # Wait for each child the root spawns.
-          APPS="crm-stack crm-manifests nginx-ingress prometheus-stack"
+          # Wait for each child the root spawns. nginx-ingress is NOT an
+          # ArgoCD app anymore (it moved to a Terraform helm_release so the
+          # LB exists before ArgoCD does) — it is verified by the
+          # "Get Ingress LoadBalancer URL" step below instead.
+          APPS="crm-stack crm-manifests prometheus-stack"
           echo ""
           for app in $APPS; do
             for i in {1..45}; do
