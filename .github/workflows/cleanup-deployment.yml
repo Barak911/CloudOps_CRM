@@ -455,8 +455,17 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: write # flip the AWS_SUBSTRATE_UP repo variable
 
     steps:
+      # Day-2 CI reads this: while 'false', app pushes still run the full
+      # test/scan gauntlet but skip ECR push / signing / image-state commit
+      # (the OIDC roles and ECR this teardown removes won't exist to fail on).
+      - name: Mark AWS substrate as down
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh variable set AWS_SUBSTRATE_UP --body false --repo ${{ github.repository }}
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:

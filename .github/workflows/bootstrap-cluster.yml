@@ -269,8 +269,18 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      actions: write # flip the AWS_SUBSTRATE_UP repo variable
 
     steps:
+      # Tell day-2 CI the substrate exists again: publish stages (ECR push,
+      # cosign, image-state) run only while AWS_SUBSTRATE_UP != 'false'.
+      # Only flip on an actually-successful bootstrap.
+      - name: Mark AWS substrate as up
+        if: needs.verify.result == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh variable set AWS_SUBSTRATE_UP --body true --repo ${{ github.repository }}
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:

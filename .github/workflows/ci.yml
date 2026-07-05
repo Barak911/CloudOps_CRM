@@ -124,7 +124,11 @@ jobs:
           set -euo pipefail
           FAIL=0
           for tgz in k8s/crm-stack/charts/*.tgz; do
-            name=$(tar tzf "$tgz" | head -1 | cut -d/ -f1)
+            # No `tar | head` here: under pipefail, head closing the pipe
+            # SIGPIPEs tar on any archive big enough to outlive the buffer
+            # and kills the step. Read the listing fully, then slice.
+            listing=$(tar tzf "$tgz")
+            name=${listing%%$'\n'*}; name=${name%%/*}
             src="k8s/crm-stack/charts/$name"
             [ -d "$src" ] || { echo "SKIP $tgz (no source dir $src — vendored-only chart)"; continue; }
             work=$(mktemp -d)
@@ -240,23 +244,34 @@ jobs:
         run: |
           docker compose -f app/docker-compose.test.yml down -v
 
+      # The AWS substrate (OIDC roles, ECR, EKS) is deliberately ephemeral —
+      # torn down between working sessions. The bootstrap workflow sets the
+      # repo variable AWS_SUBSTRATE_UP=true, cleanup sets it false; publish
+      # stages skip (loudly) while it is false so an app push still gets the
+      # full test/scan gauntlet without a cryptic OIDC failure. If the
+      # variable says up and the assume still fails, that IS a real failure.
+      - name: Publish skipped — AWS substrate is torn down
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP == 'false'
+        run: |
+          echo "::warning title=Publish skipped::AWS substrate is down (AWS_SUBSTRATE_UP=false). Build/test/scan ran; ECR push, signing and image-state update were skipped. Bring the stack up (terraform apply) and re-run via workflow_dispatch to publish."
+
       # Stage 6: Publish to ECR. Everything from here down is guarded off
       # PRs — the CI role's OIDC trust only matches refs/heads/main, and PRs
       # must not mutate ECR or the image-state file anyway.
       - name: Configure AWS credentials
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false'
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
           role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false'
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@006813a119ae0fdeb70ae00f16cda21ee6f2ff3d # v2
 
       - name: Check if image already exists in ECR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false'
         id: check-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -272,7 +287,7 @@ jobs:
 
       - name: Tag and push image to ECR
         id: push
-        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false' && steps.check-image.outputs.exists == 'false'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
@@ -293,7 +308,7 @@ jobs:
           fi
 
       - name: Skip push (image exists)
-        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'true'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false' && steps.check-image.outputs.exists == 'true'
         run: |
           echo "Skipping push - image already exists in ECR"
 
@@ -301,7 +316,7 @@ jobs:
       # Subsequent steps (cosign sign + SBOM attest + ArgoCD GitOps) all
       # reference the image by digest, not tag.
       - name: Resolve image digest from ECR
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false'
         id: digest
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -324,7 +339,7 @@ jobs:
       # No long-lived signing key required; identity is the GitHub Actions
       # workflow that produced the image, recorded in Sigstore's transparency log.
       - name: Install cosign
-        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false' && steps.check-image.outputs.exists == 'false'
         uses: sigstore/cosign-installer@053f9b74638557590800a301da1ba82351507e2c # v3.8.1
         with:
           cosign-release: 'v2.4.1'
@@ -333,7 +348,7 @@ jobs:
       # that pushed it also signed it — re-signing here would attach this
       # run's identity to an artifact it didn't produce.
       - name: Sign image with cosign (keyless)
-        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false' && steps.check-image.outputs.exists == 'false'
         env:
           IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
           COSIGN_EXPERIMENTAL: "1"
@@ -345,11 +360,11 @@ jobs:
       # The attestation is itself signed (keyless) and pushed to ECR alongside
       # the image, so downstream consumers can verify what's in the image.
       - name: Install syft
-        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false' && steps.check-image.outputs.exists == 'false'
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Generate SBOM (SPDX-JSON)
-        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false' && steps.check-image.outputs.exists == 'false'
         env:
           IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
         run: |
@@ -357,7 +372,7 @@ jobs:
           echo "SBOM: $(wc -l < /tmp/sbom.spdx.json) lines, $(jq '.packages | length' /tmp/sbom.spdx.json) packages"
 
       - name: Attest SBOM with cosign
-        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false' && steps.check-image.outputs.exists == 'false'
         env:
           IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
           COSIGN_EXPERIMENTAL: "1"
@@ -376,7 +391,7 @@ jobs:
       # mongodb and fluentd too. Editing those by regex was brittle. The
       # state file contains nothing else, so the write is unambiguous.
       - name: Update image-state.yaml for ArgoCD
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && vars.AWS_SUBSTRATE_UP != 'false'
         env:
           IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
           IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
