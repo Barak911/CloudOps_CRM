@@ -14,6 +14,17 @@ spec:
       {{- include "mongodb.selectorLabels" . | nindent 6 }}
   template:
     metadata:
+      {{- if .Values.replicaSet.enabled }}
+      annotations:
+        # Belt-and-suspenders with the PDB: tell Karpenter to never
+        # voluntarily disrupt (consolidate/expire) a node hosting a
+        # ReplicaSet member. The PDB limits eviction concurrency; this
+        # prevents the autoscaler from choosing these nodes at all.
+        # Trade-off: nodes running mongo members won't be consolidated,
+        # slightly reducing bin-packing efficiency — acceptable for the
+        # only stateful quorum in the system.
+        karpenter.sh/do-not-disrupt: "true"
+      {{- end }}
       labels:
         {{- include "mongodb.selectorLabels" . | nindent 8 }}
         {{- with .Values.global.labels }}

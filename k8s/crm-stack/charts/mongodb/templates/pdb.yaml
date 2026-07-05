@@ -1,0 +1,21 @@
+{{- if .Values.replicaSet.enabled }}
+# Disruption budget for the 3-member ReplicaSet: never let a *voluntary*
+# disruption (node drain, Karpenter consolidation/expiry) take more than one
+# member at a time. Without this, Karpenter draining two nodes concurrently
+# can evict 2/3 members and cost the ReplicaSet its quorum — a write outage
+# the ReplicaSet exists to prevent. maxUnavailable:1 keeps 2 members (a
+# majority) alive through any voluntary event; involuntary failures are the
+# ReplicaSet's own job.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "mongodb.fullname" . }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "mongodb.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "mongodb.selectorLabels" . | nindent 6 }}
+{{- end }}
