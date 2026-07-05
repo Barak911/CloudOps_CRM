@@ -1,57 +1,53 @@
 # CloudOps CRM
 
+[![CI Pipeline](https://github.com/Barak911/CloudOps_CRM/actions/workflows/ci.yml/badge.svg)](https://github.com/Barak911/CloudOps_CRM/actions/workflows/ci.yml)
+
 **A GitOps platform on AWS EKS — personal portfolio project exercising production-style DevOps patterns end-to-end.**
 
 Single-developer learning project built to practice the full platform-engineering stack in one repo: Terraform infrastructure, GitHub Actions CI with AWS OIDC, ArgoCD-managed delivery, observability, signed images, and secrets management. It exercises the patterns; it is not a production deployment of them.
 
+```mermaid
+flowchart LR
+  DEV([git push to main]) --> CI["GitHub Actions CI<br/>OIDC → AWS, no static keys<br/>pytest · Trivy · cosign · SBOM"]
+  CI -->|"push image (digest-pinned)"| ECR[("ECR<br/>immutable tags")]
+  CI -->|"commits image-state.yaml"| GIT[("this repo<br/>= desired state")]
+  subgraph EKS["EKS 1.34 — Terraform-provisioned · Karpenter spot burst · default-deny NetworkPolicies"]
+    ARGO["ArgoCD<br/>app-of-apps"] --> APP["crm-app ×2"]
+    ARGO --> PROM["Prometheus + Grafana<br/>SLO burn-rate alerts"]
+    ARGO --> EFK["Fluentd → Elasticsearch → Kibana"]
+    APP --> MDB[("MongoDB ReplicaSet ×3<br/>PDB · AZ anti-affinity")]
+  end
+  GIT -.->|"watched + auto-synced"| ARGO
+  ECR -.->|"pull @sha256:"| APP
+  ASM["AWS Secrets Manager"] -->|"ESO · IRSA"| EKS
+```
+
+CI has **zero cluster access** — its IAM role can push to ECR and nothing else; every cluster mutation flows through ArgoCD watching git.
+
 ## Proof it ran
 
-Most recent live bootstrap (clean account → working stack): [GitHub Actions run #27504415241](https://github.com/Barak911/CloudOps_CRM/actions/runs/27504415241).
+Most recent live bootstrap (clean account → working stack): [GitHub Actions run #27504415241](https://github.com/Barak911/CloudOps_CRM/actions/runs/27504415241) — raw captures in [`docs/proof/`](docs/proof/).
 
 ```text
 $ kubectl get applications -n argocd
 NAME               SYNC STATUS   HEALTH STATUS
-crm-manifests      Synced        Healthy
-crm-stack          Synced        Healthy
-nginx-ingress      Synced        Healthy
-prometheus-stack   Synced        Healthy
-
+crm-manifests      Synced        Healthy      # + crm-stack, prometheus-stack — all Healthy
 $ kubectl get networkpolicies -A | wc -l
-14   # default-deny + explicit allows across crm + monitoring (VPC CNI enforced)
-
-# Prometheus rules loaded:
-ALERT  crm-app.slo/CRMAppErrorBudgetFastBurn       state=inactive
-ALERT  crm-app.slo/CRMAppErrorBudgetSlowBurn       state=inactive
-ALERT  crm-app.slo/CRMAppP95LatencyHigh            state=inactive
-ALERT  crm-app.slo/CRMAppDown                      state=inactive
-ALERT  crm-platform.health/KubePodCrashLooping     state=inactive
-ALERT  crm-platform.health/PVCNearFull             state=inactive
-ALERT  crm-platform.health/MongoDBDown             state=pending
-REC    crm-app.slo/job:flask_http_request:error_rate{5m,30m,1h,6h}
-
-# Live scrape targets (app actually instrumented):
-job=crm-app pod=crm-app-...  health=up
-job=crm-app pod=crm-app-...  health=up
-
-# MongoDB replica set across 3 nodes (anti-affinity by AZ):
-mongodb-0   Running   ip-172-31-6-80.ec2.internal     us-east-1c   PRIMARY
-mongodb-1   Running   ip-172-31-66-79.ec2.internal    us-east-1f   SECONDARY
-mongodb-2   Running   ip-172-31-24-152.ec2.internal   us-east-1a   SECONDARY
-
-# Karpenter provisioned a spot node from a Pending pod in ~60s:
-ip-172-31-45-216.ec2.internal   karpenter-default   spot   c7a.medium   us-east-1b
-
-# Workloads:
-crm         8 pods Running    # crm-app x2, mongodb x3, ES, kibana, fluentd x3
-monitoring  8 pods Running    # prometheus, alertmanager, grafana, kube-state, ...
-argocd      5 pods Running
-external-secrets  3 pods Running
-cert-manager  3 pods Running
-ingress-nginx 1 pod  Running
-karpenter   2 pods Running
+14   # default-deny + explicit allows, enforced by VPC CNI
+# MongoDB ReplicaSet across 3 AZs: PRIMARY + 2 SECONDARY, all Running
+# Karpenter: Pending pod → spot c7a.medium provisioned in ~60s
+# 8 SLO/platform alerts loaded; app scrape targets up; 30 pods green across 7 namespaces
 ```
 
-All workloads green on a fresh cluster brought up by the bootstrap workflow; raw captures are in [`docs/proof/`](docs/proof/).
+> **What this capture corresponds to — honesty note:** that run predates two
+> refactors visible in today's code: nginx-ingress has since moved from an
+> ArgoCD Application into the Terraform substrate (the verify workflow and
+> app list now reflect that), and the run used the AWS **default VPC**
+> (`use_custom_vpc=false` — node IPs `172.31.x.x` in the captures). The
+> custom-VPC path (private subnets + NAT) is implemented and is the tfvars
+> default, but has not yet had a captured end-to-end run. The proof block
+> will be regenerated from the next live bootstrap on the current
+> architecture.
 
 ## Scope & Intent
 
@@ -107,7 +103,7 @@ The Python/Flask CRM in [`app/`](app/) is a deliberately thin payload — its on
 |-------|-----------|
 | **Application** | Python Flask REST API, Gunicorn, MongoDB ReplicaSet |
 | **Containers** | Docker (multi-stage builds), Amazon ECR (immutable tags) |
-| **Orchestration** | Kubernetes (AWS EKS 1.31), Helm umbrella chart |
+| **Orchestration** | Kubernetes (AWS EKS 1.34), Helm umbrella chart |
 | **GitOps** | ArgoCD (App-of-Apps; mixed single- and multi-source children) |
 | **CI/CD** | GitHub Actions with AWS OIDC federation, split bootstrap/CI roles |
 | **Infrastructure** | Terraform (EKS, ECR, IAM OIDC, EBS CSI, Karpenter, SQS, EventBridge, Secrets Manager) |
@@ -173,13 +169,15 @@ The Python/Flask CRM in [`app/`](app/) is a deliberately thin payload — its on
 2. CI builds, tests, scans, pushes      6. ArgoCD pulls image by @sha256: digest
 3. CI signs (cosign) + attests SBOM     7. New version is live — zero manual steps
 4. CI writes new tag+digest to
-   k8s/values/image-state.yaml
+   k8s/crm-stack/image-state.yaml
 ```
 
 **CI** owns: build, test, scan, ECR push, sign, SBOM, image-state update.
 **CD (ArgoCD)** owns: every cluster operation after initial bootstrap.
 
 The image-state file is segregated from the umbrella `values.yaml` so the only file the bot ever touches is one with no co-located mongodb/fluentd tags to clobber, and a workflow-level concurrency gate serializes simultaneous runs so the `git pull --rebase` window never collides with itself.
+
+Accepted tradeoff of state-in-git: every deploy adds a `ci(state):` bot commit, so `git log` carries machine noise alongside engineering history (`[skip ci]` keeps them from triggering loops). The alternatives — an OCI values artifact, or ArgoCD Image Updater — keep history clean at the cost of another moving part; at this scale the noise is the cheaper price.
 
 > **Bootstrap honesty.** "GitOps from absolute zero" requires bootstrapping the GitOps controller itself with something else. Here that something else is Terraform — ArgoCD + the rest of the substrate are `helm_release` resources, and the three chicken-and-egg manifests that hand the platform over to GitOps (crm namespace, AWS SecretStore binding, root App-of-Apps) are `kubectl_manifest` resources. One `terraform apply`, no procedural shell script in CI.
 
@@ -233,7 +231,9 @@ At one-developer scale the coordination cost of split repos is higher than the b
 
 The two common alternatives encrypt secrets in Git. They work, they're simple to bootstrap, they avoid an external dependency.
 
-I picked ExternalSecrets because *no version of a secret* lives in Git, even encrypted. Rotating a secret is a Secrets Manager UI operation, not a git push. IRSA means the cluster also has no static AWS credentials — workloads assume roles via their pod service-account identity.
+I picked ExternalSecrets because *no version of a secret* lives in Git, even encrypted. IRSA means the cluster also has no static AWS credentials — workloads assume roles via their pod service-account identity. (Rotation caveat: for the self-hosted databases, rotating in Secrets Manager alone breaks auth — the coordinated procedure is in [`docs/runbooks/secret-rotation.md`](docs/runbooks/secret-rotation.md).)
+
+**Why IRSA and not EKS Pod Identity?** Pod Identity is AWS's newer, lower-maintenance default (no per-role OIDC trust conditions). IRSA is used here deliberately: it works identically outside EKS-managed addons, the explicit `sub`/`aud` trust conditions make the identity boundary visible in the Terraform (which is half the point of a portfolio repo), and every role in this stack was scoped by hand. Migrating to Pod Identity is a mechanical follow-up, not a redesign.
 
 Cost: another operator to install and operate, and a hard dependency on AWS Secrets Manager. For a portfolio project that cost is mostly setup time, paid once.
 
@@ -262,12 +262,15 @@ Everything in this table is a real production gap, not a stylistic preference. C
 | IAM — CI | Split into bootstrap role (cluster-admin, trust gated by `environment:production`) and CI role (ECR push only, trust pinned to `refs/heads/main`, no cluster access entry) | Configure required reviewers on the `production` environment so a bootstrap run needs human approval; rotate the bootstrap role after each successful bring-up |
 | TLS | cert-manager + self-signed `ClusterIssuer` | Let's Encrypt or ACM with Route53-validated cert, real domain |
 | MongoDB HA | 3-member ReplicaSet, pod anti-affinity by AZ (soft), keyfile auth, rs.initiate via idempotent ArgoCD Sync-hook Job (wave 0, internal polling loop), multi-host `?replicaSet=rs0` URI | Pin anti-affinity to *required* instead of preferred once the cluster spans 3+ AZs reliably; consider managed (DocumentDB / Atlas) to drop the rs.initiate Job entirely; add a `mongodb_exporter` so the `MongoDBDown` alert clears on healthy state instead of going `pending` |
-| Observability | RED-method SLO burn-rate alerts (Google SRE multi-window) + platform health rules loaded into Prometheus; Alertmanager routing tree wired with severity routes and inhibit rules; receivers are null stubs | Real receiver (PagerDuty / Slack) on the `pager-null` route; SLO doc and runbooks linked from the `runbook_url` annotations |
+| Observability | RED-method SLO burn-rate alerts (Google SRE multi-window) + platform health rules loaded into Prometheus; Alertmanager routing tree wired with severity routes and inhibit rules; receivers are null stubs | Real receiver (PagerDuty / Slack) on the `pager-null` route; SLO doc and runbooks linked from the `runbook_url` annotations (runbooks now exist in [`docs/runbooks/`](docs/runbooks/)); distributed tracing (OTel) is absent — the app already propagates a correlation ID, which is the natural seam to hang trace context on |
 | Network policy | Default-deny in `crm` and ingress-default-deny in `monitoring`, *enforced* by VPC CNI with `enableNetworkPolicy=true`; 14 explicit allows for every known flow | Per-tenant policies as the cluster gains tenants; an egress policy on the `kube-system` namespace itself |
 | Autoscaling | Karpenter NodePool capped at 32 vCPU / 64 GiB, spot-first AL2023, IMDSv2-only, SQS interruption queue + EventBridge rules for spot warnings and rebalance recommendations | Split into multiple NodePools by workload class (system / app / batch); explicit on-demand fallback for PRIMARY-eligible MongoDB members |
-| Supply chain | cosign keyless OIDC signs every pushed image; SPDX-JSON SBOM (syft) attached as a cosign attestation; deployment pulls by `@sha256:` digest | Admission-time signature verification (cosign policy controller or Kyverno) so unsigned images cannot run; require an attested SBOM on every deploy |
+| Supply chain | cosign keyless OIDC signs every image CI builds (and only those — re-runs don't re-sign artifacts they didn't produce); SPDX-JSON SBOM (syft) attached as a cosign attestation; deployment pulls by `@sha256:` digest. Verification is not yet enforced at admission — signing is currently write-only | Enable the staged Kyverno `verifyImages` policy in [`docs/kyverno-verify-images.yaml`](docs/kyverno-verify-images.yaml) (identity-pinned to the CI workflow on `main`, requires the SBOM attestation) after validating the webhook against a live bootstrap |
+| Logging pipeline | Elasticsearch runs a single replica — a logging SPOF (metrics and alerting are unaffected; app logs also go to stdout/kubectl) | 3-node ES cluster via the ECK operator (the vendored 8.5.1 chart is archived upstream), or ship logs to a managed sink (CloudWatch / OpenSearch Service) |
 | Backups | None | Velero or scheduled EBS snapshots with a documented, *tested* restore procedure |
 | Secrets rotation | Manual via Secrets Manager | Automated rotation Lambdas with downstream notification |
+| AWS account ID in git | The ECR registry URL in `k8s/crm-stack/values.yaml` embeds the account ID — GitOps needs a pullable image reference in git, and account IDs are identifiers, not credentials (they appear in every shared ARN) | Accepted deliberately; the security boundary is IAM/SCP, not obscurity. If hiding it were required, an ECR pull-through cache or registry alias could front it |
+| Branch protection | None on `main` — CI runs the full gauntlet on PRs, but nothing forces changes through a PR. Naive "require PRs" protection would break the pipeline: CI itself commits `image-state.yaml` to `main` | Require PRs + status checks with the CI bot exempted (GitHub App with bypass, or a merge queue); or move image-state out of git into an OCI values artifact so nothing needs to push to `main` |
 
 ## Repository Structure
 
@@ -299,11 +302,9 @@ CloudOps_CRM/
 │   │   ├── crm-dashboard-configmap.yaml
 │   │   ├── crm-prometheusrules.yaml    # SLO burn-rate + platform health alerts
 │   │   ├── networkpolicies.yaml        # Default-deny + explicit allows (enforced by VPC CNI)
-│   │   ├── karpenter-nodepool.yaml     # EC2NodeClass + NodePool (envsubst'd at bootstrap)
-│   │   └── external-secrets.yaml       # Rendered at bootstrap time
-│   └── values/
-│       ├── image-state.yaml      # CI-owned image tag + digest
-│       └── ...                   # Per-environment overlays
+│   │   └── external-secrets.yaml       # ExternalSecret bindings (ESO → k8s Secrets)
+│   ├── crm-stack/image-state.yaml # CI-owned image tag + digest (bot-committed)
+│   └── values/                   # Substrate chart values (argocd, nginx, prometheus)
 │
 ├── infra/                        # Terraform (AWS)
 │   ├── eks.tf                    # EKS cluster + managed addons + node group + access entries
@@ -373,7 +374,7 @@ Trigger the **Bootstrap EKS Cluster** workflow from GitHub Actions (manual `work
 
 ### 4. Ongoing deployments
 
-Push to `app/` on `main`. CI builds, tests, scans, signs the image with cosign, attaches an SBOM, writes the new tag + `@sha256:` digest into `k8s/values/image-state.yaml`, and `[skip ci]` commits. ArgoCD auto-syncs.
+Push to `app/` on `main`. CI builds, tests, scans, signs the image with cosign, attaches an SBOM, writes the new tag + `@sha256:` digest into `k8s/crm-stack/image-state.yaml`, and `[skip ci]` commits. ArgoCD auto-syncs.
 
 ### 5. Local development
 
