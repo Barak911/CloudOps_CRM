@@ -9,6 +9,19 @@ on:
       - 'k8s/**'
       - 'infra/**'
       - '.github/workflows/ci.yml'
+  # PRs get the full validate/test/scan gauntlet but none of the
+  # cluster-facing stages (ECR push, cosign, image-state commit) — those are
+  # guarded per-step below, and couldn't run anyway: the CI role's OIDC trust
+  # is pinned to refs/heads/main, so a PR ref can't assume it. With auto-sync
+  # ArgoCD treats main as production; this is the review gate in front of it.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'k8s/**'
+      - 'infra/**'
+      - '.github/workflows/ci.yml'
   # Manual trigger so we can rebuild + republish an image after a teardown
   # without making a token edit to app/. Same role assumption (env:production
   # is NOT required because this workflow uses AWS_CI_ROLE_ARN, which is
@@ -77,14 +90,58 @@ jobs:
       - name: Lint Helm chart
         run: helm lint k8s/crm-stack/
 
-      - name: Validate K8s manifests (dry-run)
+      - name: Validate K8s manifests (schema-checked)
         run: |
-          # Basic YAML syntax validation for raw manifests
+          # Parse check first. NOTE: safe_load_all returns a LAZY generator —
+          # it must be consumed (list()) or nothing is actually parsed and
+          # malformed YAML sails through. That exact bug lived here once.
           for f in k8s/manifests/*.yaml; do
-            echo "Validating $f..."
-            python3 -c "import yaml, sys; yaml.safe_load_all(open('$f'))" || exit 1
+            echo "Parsing $f..."
+            python3 -c "import yaml; list(yaml.safe_load_all(open('$f')))" || exit 1
           done
-          echo "All manifests are valid YAML"
+
+          # Schema validation against the k8s OpenAPI spec. CRD-backed kinds
+          # (PrometheusRule, ExternalSecret, ArgoCD Application) have no
+          # builtin schema, hence -ignore-missing-schemas: core kinds are
+          # strictly validated, CRDs pass the parse check above.
+          KUBECONFORM_VERSION=v0.7.0
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar xz kubeconform
+          ./kubeconform -strict -ignore-missing-schemas -summary k8s/manifests/*.yaml
+
+      - name: Verify packaged subcharts match their source
+        run: |
+          # The umbrella chart deploys the committed .tgz packages, NOT the
+          # unpacked chart dirs next to them — an edit to source that skips
+          # `helm package` silently deploys stale manifests (this bit us:
+          # see "rebuild subchart .tgz files from current source" in git log).
+          # Method: repackage the source with helm and diff the two EXTRACTED
+          # trees. Comparing the tgz against the raw source dir false-positives:
+          # `helm package` canonicalizes Chart.yaml key order, so packaged
+          # output never byte-matches an un-packaged Chart.yaml. Packaging
+          # both sides normalizes them; gzip timestamps don't matter because
+          # we compare extracted content, not archives.
+          set -euo pipefail
+          FAIL=0
+          for tgz in k8s/crm-stack/charts/*.tgz; do
+            name=$(tar tzf "$tgz" | head -1 | cut -d/ -f1)
+            src="k8s/crm-stack/charts/$name"
+            [ -d "$src" ] || { echo "SKIP $tgz (no source dir $src — vendored-only chart)"; continue; }
+            work=$(mktemp -d)
+            tar xzf "$tgz" -C "$work/"
+            mv "$work/$name" "$work/committed"
+            helm package "$src" -d "$work" --version "$(tar xzfO "$tgz" "$name/Chart.yaml" | grep '^version:' | awk '{print $2}')" >/dev/null
+            tar xzf "$work"/*.tgz -C "$work/"
+            if diff -r "$work/committed" "$work/$name" > /tmp/drift.txt 2>&1; then
+              echo "OK   $tgz matches $src"
+            else
+              echo "DRIFT $tgz does not match $src:"
+              cat /tmp/drift.txt
+              FAIL=1
+            fi
+            rm -rf "$work"
+          done
+          [ "$FAIL" -eq 0 ] || { echo "Re-run 'helm package' for the drifted chart(s) and commit the result"; exit 1; }
 
   # Build, test, scan, push Docker image when app/ changes — or when triggered
   # manually via workflow_dispatch (used to seed a fresh ECR after teardown).
@@ -183,18 +240,23 @@ jobs:
         run: |
           docker compose -f app/docker-compose.test.yml down -v
 
-      # Stage 6: Publish to ECR
+      # Stage 6: Publish to ECR. Everything from here down is guarded off
+      # PRs — the CI role's OIDC trust only matches refs/heads/main, and PRs
+      # must not mutate ECR or the image-state file anyway.
       - name: Configure AWS credentials
+        if: github.event_name != 'pull_request'
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
         with:
           role-to-assume: ${{ secrets.AWS_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
+        if: github.event_name != 'pull_request'
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@006813a119ae0fdeb70ae00f16cda21ee6f2ff3d # v2
 
       - name: Check if image already exists in ECR
+        if: github.event_name != 'pull_request'
         id: check-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -210,7 +272,7 @@ jobs:
 
       - name: Tag and push image to ECR
         id: push
-        if: steps.check-image.outputs.exists == 'false'
+        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
@@ -231,7 +293,7 @@ jobs:
           fi
 
       - name: Skip push (image exists)
-        if: steps.check-image.outputs.exists == 'true'
+        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'true'
         run: |
           echo "Skipping push - image already exists in ECR"
 
@@ -239,6 +301,7 @@ jobs:
       # Subsequent steps (cosign sign + SBOM attest + ArgoCD GitOps) all
       # reference the image by digest, not tag.
       - name: Resolve image digest from ECR
+        if: github.event_name != 'pull_request'
         id: digest
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -261,11 +324,16 @@ jobs:
       # No long-lived signing key required; identity is the GitHub Actions
       # workflow that produced the image, recorded in Sigstore's transparency log.
       - name: Install cosign
+        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
         uses: sigstore/cosign-installer@053f9b74638557590800a301da1ba82351507e2c # v3.8.1
         with:
           cosign-release: 'v2.4.1'
 
+      # Only sign what THIS run built. If the image already existed, the run
+      # that pushed it also signed it — re-signing here would attach this
+      # run's identity to an artifact it didn't produce.
       - name: Sign image with cosign (keyless)
+        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
         env:
           IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
           COSIGN_EXPERIMENTAL: "1"
@@ -277,9 +345,11 @@ jobs:
       # The attestation is itself signed (keyless) and pushed to ECR alongside
       # the image, so downstream consumers can verify what's in the image.
       - name: Install syft
+        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
 
       - name: Generate SBOM (SPDX-JSON)
+        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
         env:
           IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
         run: |
@@ -287,6 +357,7 @@ jobs:
           echo "SBOM: $(wc -l < /tmp/sbom.spdx.json) lines, $(jq '.packages | length' /tmp/sbom.spdx.json) packages"
 
       - name: Attest SBOM with cosign
+        if: github.event_name != 'pull_request' && steps.check-image.outputs.exists == 'false'
         env:
           IMAGE_REF: ${{ steps.digest.outputs.image_ref }}
           COSIGN_EXPERIMENTAL: "1"
@@ -305,6 +376,7 @@ jobs:
       # mongodb and fluentd too. Editing those by regex was brittle. The
       # state file contains nothing else, so the write is unambiguous.
       - name: Update image-state.yaml for ArgoCD
+        if: github.event_name != 'pull_request'
         env:
           IMAGE_TAG: ${{ steps.set-tag.outputs.tag }}
           IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
