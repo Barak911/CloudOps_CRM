@@ -116,8 +116,13 @@ jobs:
         run: |
           echo "🔥 Deleting LoadBalancer services to prevent orphaned AWS ELBs..."
 
-          # Delete LoadBalancers from all namespaces
-          for NS in default monitoring ingress-nginx; do
+          # Derive the namespace list from the cluster instead of hardcoding
+          # it — a hardcoded list went stale once already (services moved from
+          # default to crm/ingress-nginx and the loop kept checking the old
+          # namespaces).
+          LB_NAMESPACES=$(kubectl get svc -A -o json 2>/dev/null \
+            | jq -r '.items[] | select(.spec.type=="LoadBalancer") | .metadata.namespace' | sort -u)
+          for NS in $LB_NAMESPACES; do
             echo ""
             echo "=== Checking namespace: $NS ==="
 
@@ -278,8 +283,13 @@ jobs:
           echo "🔥 Deleting Persistent Volume Claims (PVCs)..."
           echo "⚠️  WARNING: This will delete all persistent data!"
 
-          # Delete PVCs from all namespaces
-          for NS in default monitoring; do
+          # Derive namespaces from live PVCs instead of hardcoding — the old
+          # hardcoded list (default, monitoring) missed `crm`, where the
+          # MongoDB and Elasticsearch volumes actually live. That left EBS
+          # volumes orphaned after terraform destroy killed the CSI driver:
+          # exactly the billing leak this step exists to prevent.
+          PVC_NAMESPACES=$(kubectl get pvc -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\n"}{end}' 2>/dev/null | sort -u)
+          for NS in $PVC_NAMESPACES; do
             echo ""
             echo "=== Checking namespace: $NS ==="
 
