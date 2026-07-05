@@ -66,6 +66,11 @@ def test_ready_check_unhealthy(client):
     data = response.get_json()
     assert data['status'] == 'not ready'
     assert data['database'] == 'disconnected'
+    # The raw exception must never be echoed to the client: /ready is
+    # reachable through the unauthenticated ingress and PyMongo errors can
+    # embed connection internals. (Regression guard for a fixed leak.)
+    assert 'error' not in data
+    assert 'connection refused' not in response.get_data(as_text=True)
 
 def test_root_serves_html(client):
     """Test root endpoint serves frontend HTML"""

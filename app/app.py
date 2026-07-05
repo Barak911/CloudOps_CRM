@@ -161,8 +161,12 @@ def ready():
         mongo.cx.admin.command('ping')
         return jsonify({"status": "ready", "service": "CRM API", "database": "connected"}), 200
     except Exception as e:
+        # Log the real error server-side; never echo str(e) to the client —
+        # PyMongo errors embed connection internals, and this endpoint is
+        # reachable through the unauthenticated ingress (same rule the
+        # global 500 handler follows).
         logger.warning(f"Readiness check failed: {e}")
-        return jsonify({"status": "not ready", "service": "CRM API", "database": "disconnected", "error": str(e)}), 503
+        return jsonify({"status": "not ready", "service": "CRM API", "database": "disconnected"}), 503
 
 @app.route('/stats', methods=['GET'])
 def stats():
