@@ -24,9 +24,16 @@ resource "aws_secretsmanager_secret" "elasticsearch_credentials" {
   }
 }
 
-# Seed the secret with a generated password on first apply.
-# After creation, rotate the password in the AWS Console or via CI — Terraform
-# will NOT overwrite an existing secret value thanks to the lifecycle ignore.
+# Seed the secret with a generated password on first apply. Terraform will
+# NOT overwrite an existing secret value thanks to the lifecycle ignore.
+#
+# ROTATION WARNING: rotating this value in Secrets Manager alone BREAKS the
+# stack — MongoDB stores its own copy of every user password, so ESO would
+# refresh the k8s Secret to a value the database doesn't accept (the rs-init
+# hook Job then CrashLoops on auth, and app pods pick up the bad creds on
+# their next restart). Rotation must be coordinated: change the password
+# INSIDE MongoDB first, then update Secrets Manager. Full procedure:
+# docs/runbooks/secret-rotation.md (Elasticsearch has the same shape).
 resource "random_password" "mongodb_root" {
   length  = 24
   special = false
