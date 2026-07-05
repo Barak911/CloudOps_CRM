@@ -134,12 +134,31 @@ spec:
             summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} > 85% full"
             description: "Used {{ $value | humanizePercentage }} of capacity."
 
-        - alert: MongoDBDown
+        # MongoDB health from kube-state-metrics (already scraped by the
+        # stack) instead of a mongodb exporter that doesn't exist here. The
+        # previous absent(up{job=~"...mongodb"}) version could NEVER resolve —
+        # there was no MongoDB scrape target, so a page-severity alert sat
+        # permanently pending on a healthy cluster (alert-fatigue
+        # anti-pattern). replicas_ready is backed by the pods' mongosh-ping
+        # readinessProbe, so it tracks real member health. A mongodb_exporter
+        # (replication lag, election metrics) remains the production
+        # recommendation in the README hardening table.
+        - alert: MongoDBQuorumLost
           expr: |
-            absent(up{job=~"crm-stack-mongodb|mongodb"} == 1)
-          for: 3m
+            kube_statefulset_status_replicas_ready{namespace="crm", statefulset=~".*mongodb.*"} < 2
+          for: 2m
           labels:
             severity: page
           annotations:
-            summary: "MongoDB has no healthy targets"
-            description: "All MongoDB scrape targets are down or missing."
+            summary: "MongoDB ReplicaSet has lost quorum ({{ $value }}/3 members ready)"
+            description: "Fewer than 2 of 3 members ready — writes are unavailable."
+
+        - alert: MongoDBMemberDown
+          expr: |
+            kube_statefulset_status_replicas_ready{namespace="crm", statefulset=~".*mongodb.*"} < 3
+          for: 5m
+          labels:
+            severity: ticket
+          annotations:
+            summary: "MongoDB ReplicaSet degraded ({{ $value }}/3 members ready)"
+            description: "Quorum holds but redundancy is reduced; investigate before a second failure."
