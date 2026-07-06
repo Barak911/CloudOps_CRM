@@ -461,10 +461,13 @@ jobs:
       # Day-2 CI reads this: while 'false', app pushes still run the full
       # test/scan gauntlet but skip ECR push / signing / image-state commit
       # (the OIDC roles and ECR this teardown removes won't exist to fail on).
-      - name: Mark AWS substrate as down
+      - name: Mark AWS substrate as down (best-effort)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh variable set AWS_SUBSTRATE_UP --body false --repo ${{ github.repository }}
+        # Same GITHUB_TOKEN limitation as the bootstrap counterpart — warn,
+        # don't fail; flip manually if the warning appears.
+        run: |
+          gh variable set AWS_SUBSTRATE_UP --body false --repo ${{ github.repository }}             || echo "::warning title=Set AWS_SUBSTRATE_UP manually::GITHUB_TOKEN cannot write Actions variables. Run: gh variable set AWS_SUBSTRATE_UP --body false"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4

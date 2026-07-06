@@ -286,11 +286,17 @@ jobs:
       # Tell day-2 CI the substrate exists again: publish stages (ECR push,
       # cosign, image-state) run only while AWS_SUBSTRATE_UP != 'false'.
       # Only flip on an actually-successful bootstrap.
-      - name: Mark AWS substrate as up
+      - name: Mark AWS substrate as up (best-effort)
         if: needs.verify.result == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh variable set AWS_SUBSTRATE_UP --body true --repo ${{ github.repository }}
+        # GITHUB_TOKEN cannot be granted the Variables permission (403 —
+        # "Resource not accessible by integration"), so this only works if a
+        # PAT/App token replaces GH_TOKEN. Best-effort by design: on failure
+        # it warns instead of failing the run — flip manually with
+        #   gh variable set AWS_SUBSTRATE_UP --body true
+        run: |
+          gh variable set AWS_SUBSTRATE_UP --body true --repo ${{ github.repository }}             || echo "::warning title=Set AWS_SUBSTRATE_UP manually::GITHUB_TOKEN cannot write Actions variables. Run: gh variable set AWS_SUBSTRATE_UP --body true"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
