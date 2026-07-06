@@ -333,11 +333,15 @@ resource "aws_cloudwatch_event_target" "karpenter_interruption" {
 # Subnet + security-group tags Karpenter uses for discovery
 # -----------------------------------------------------------------------------
 
-# Karpenter discovers subnets via tag karpenter.sh/discovery=<cluster_name>.
-# Tag the EKS cluster's security group (already created by the module) and
-# the subnets used by the cluster.
+# Karpenter discovers security groups via tag karpenter.sh/discovery.
+# Tag the NODE SHARED security group — the same one managed-node-group
+# instances hold — NOT the cluster primary SG. Nodes on different SGs can
+# only talk on the narrow control-plane ports the module opens between
+# them, so pods on Karpenter nodes couldn't reach in-cluster services
+# (ES:9200, Mongo:27017) hosted on managed nodes. Found live: every hook
+# Job scheduled onto the first spot node hung on connect.
 resource "aws_ec2_tag" "karpenter_discovery_sg" {
-  resource_id = module.eks.cluster_primary_security_group_id
+  resource_id = module.eks.node_security_group_id
   key         = "karpenter.sh/discovery"
   value       = var.cluster_name
 }

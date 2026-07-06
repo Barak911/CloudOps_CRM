@@ -101,7 +101,10 @@ resource "helm_release" "argocd" {
 
   repository = "https://argoproj.github.io/argo-helm"
   chart      = "argo-cd"
-  version    = "7.7.10"
+  # Chart 9.5.x = ArgoCD v3.4.x. 7.7.10 ran ArgoCD v2.13 (late 2024) —
+  # flagged as version drift in review; v2.13 also breaks on the
+  # terminatingReplicas schema gap against newer control planes.
+  version = "9.5.20"
 
   values = [file("${path.module}/../k8s/values/argocd-values.yaml")]
 
