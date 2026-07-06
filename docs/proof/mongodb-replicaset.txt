@@ -1,25 +1,23 @@
-=== MongoDB ReplicaSet members ===
-mongodb-0    Running 25m                        ago)
-mongodb-1    Running ip-172-31-66-79.ec2.internal 172.31.73.248
-mongodb-2    Running ip-172-31-24-152.ec2.internal 172.31.31.52
+# MongoDB ReplicaSet on the custom-VPC cluster + disruption protection.
+# Captured 2026-07-06T05:10Z
 
-=== Pods spread across 3 distinct nodes (anti-affinity) ===
-       3
-=== Replica set state via mongosh from PRIMARY ===
-mongodb-0.mongodb.crm.svc.cluster.local:27017  state=PRIMARY  health=1
-mongodb-1.mongodb.crm.svc.cluster.local:27017  state=SECONDARY  health=1
-mongodb-2.mongodb.crm.svc.cluster.local:27017  state=SECONDARY  health=1
+$ kubectl get pods -n crm -l app=mongodb -o wide
+NAME        READY    STATUS   IP            NODE                          
+mongodb-0   1/1      Running  10.0.25.21    ip-10-0-26-207.ec2.internal   
+mongodb-1   1/1      Running  10.0.0.25     ip-10-0-5-255.ec2.internal    
+mongodb-2   1/1      Running  10.0.39.154   ip-10-0-40-166.ec2.internal   
 
-=== App round-trip ===
-POST /person/u-1 then GET:
-{
-    "_id": "6a2ef9b2165fe8654454ef7a",
-    "email": "a@test.com",
-    "name": "Alice",
-    "person_id": "u-1"
-}
-stats:
-{
-    "latest_entry_id": "6a2ef9b34fd070ad2ec44ea4",
-    "total_persons": 2
-}
+$ rs.status() member states
+Warning: Could not access file: EACCES: permission denied, mkdir '/data/db/.mongodb/mongosh'
+mongodb-0.mongodb.crm.svc.cluster.local:27017 PRIMARY
+mongodb-1.mongodb.crm.svc.cluster.local:27017 SECONDARY
+mongodb-2.mongodb.crm.svc.cluster.local:27017 SECONDARY
+
+$ kubectl get pdb -n crm
+NAME                       MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+crm-app                    1               N/A               1                     25m
+elasticsearch-master-pdb   N/A             1                 1                     25m
+mongodb                    N/A             1                 1                     25m
+
+$ karpenter do-not-disrupt annotation on members:
+true (mongodb-0)

@@ -1,15 +1,19 @@
-===rules loaded===
-  REC    crm-app.slo/job:flask_http_request:error_rate1h
-  REC    crm-app.slo/job:flask_http_request:error_rate5m
-  REC    crm-app.slo/job:flask_http_request:error_rate6h
-  REC    crm-app.slo/job:flask_http_request:error_rate30m
-  ALERT  crm-app.slo/CRMAppErrorBudgetFastBurn: state=inactive
-  ALERT  crm-app.slo/CRMAppErrorBudgetSlowBurn: state=inactive
-  ALERT  crm-app.slo/CRMAppP95LatencyHigh: state=inactive
-  ALERT  crm-app.slo/CRMAppDown: state=inactive
-  ALERT  crm-platform.health/KubePodCrashLooping: state=inactive
-  ALERT  crm-platform.health/PVCNearFull: state=inactive
-  ALERT  crm-platform.health/MongoDBDown: state=pending
-===crm-app scrape target===
-  job=crm-app pod=crm-app-796f9f4c65-w8mds health=up
-  job=crm-app pod=crm-app-796f9f4c65-7h528 health=up
+# Prometheus rules on the fresh cluster. Note MongoDBQuorumLost /
+# MongoDBMemberDown are 'inactive' (healthy), NOT permanently-pending
+# like the old exporter-less MongoDBDown alert they replaced.
+# Captured 2026-07-06T05:10Z
+
+REC    crm-app.slo/job:flask_http_request:error_rate1h
+REC    crm-app.slo/job:flask_http_request:error_rate5m
+REC    crm-app.slo/job:flask_http_request:error_rate6h
+REC    crm-app.slo/job:flask_http_request:error_rate30m
+ALERT  crm-app.slo/CRMAppErrorBudgetFastBurn              state=inactive
+ALERT  crm-app.slo/CRMAppErrorBudgetSlowBurn              state=inactive
+ALERT  crm-app.slo/CRMAppP95LatencyHigh                   state=inactive
+ALERT  crm-app.slo/CRMAppDown                             state=inactive
+ALERT  crm-platform.health/KubePodCrashLooping                    state=inactive
+ALERT  crm-platform.health/PVCNearFull                            state=inactive
+ALERT  crm-platform.health/MongoDBQuorumLost                      state=inactive
+ALERT  crm-platform.health/MongoDBMemberDown                      state=inactive
+ALERT  alertmanager.rules/AlertmanagerClusterCrashlooping        state=inactive
+ALERT  kubernetes-apps/KubePodCrashLooping                    state=inactive

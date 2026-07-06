@@ -1,12 +1,19 @@
+# NetworkPolicies, enforced by VPC CNI (enableNetworkPolicy=true).
+# Captured 2026-07-06T05:10Z
+
+$ kubectl get networkpolicies -A
 NAMESPACE    NAME                                 POD-SELECTOR                                               AGE
-crm          allow-crm-app-egress                 app=crm-app                                                9m30s
-crm          allow-crm-app-ingress                app=crm-app                                                9m30s
-crm          allow-dns-egress                     <none>                                                     9m30s
-crm          allow-elasticsearch-ingress          app=elasticsearch-master                                   9m30s
-crm          allow-fluentd-kibana-es-egress       app.kubernetes.io/name in (elasticsearch,fluentd,kibana)   9m30s
-crm          allow-kibana-ingress                 app=kibana                                                 9m30s
-crm          allow-mongodb-ingress                app=mongodb                                                9m30s
-crm          default-deny-all                     <none>                                                     9m30s
-monitoring   allow-alertmanager-from-prometheus   app.kubernetes.io/name=alertmanager                        9m30s
-monitoring   allow-grafana-from-ingress           app.kubernetes.io/name=grafana                             9m30s
-monitoring   default-deny-ingress                 <none>                                                     9m30s
+crm          allow-crm-app-egress                 app=crm-app                                                25m
+crm          allow-crm-app-ingress                app=crm-app                                                25m
+crm          allow-dns-egress                     <none>                                                     25m
+crm          allow-elasticsearch-ingress          app=elasticsearch-master                                   25m
+crm          allow-elasticsearch-seed-egress      job=elasticsearch-seed                                     25m
+crm          allow-fluentd-kibana-es-egress       app in (elasticsearch-master,fluentd,kibana)               25m
+crm          allow-fluentd-kibana-es-egress-alt   app.kubernetes.io/name in (elasticsearch,fluentd,kibana)   25m
+crm          allow-kibana-ingress                 app=kibana                                                 25m
+crm          allow-mongodb-egress                 app=mongodb                                                25m
+crm          allow-mongodb-ingress                app=mongodb                                                25m
+crm          default-deny-all                     <none>                                                     25m
+monitoring   allow-alertmanager-from-prometheus   app.kubernetes.io/name=alertmanager                        25m
+monitoring   allow-grafana-from-ingress           app.kubernetes.io/name=grafana                             25m
+monitoring   default-deny-ingress                 <none>                                                     25m

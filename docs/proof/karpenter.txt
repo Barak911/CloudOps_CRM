@@ -1,17 +1,14 @@
-===Karpenter nodes (live)===
-ip-172-31-24-152.ec2.internal   Ready   <none>   130m   v1.31.14-eks-3385e9b                              t3a.medium   us-east-1a
-ip-172-31-45-216.ec2.internal   Ready   <none>   22s    v1.31.14-eks-3385e9b   karpenter-default   spot   c7a.medium   us-east-1b
-ip-172-31-6-80.ec2.internal     Ready   <none>   130m   v1.31.14-eks-3385e9b                              t3a.medium   us-east-1c
-ip-172-31-66-79.ec2.internal    Ready   <none>   130m   v1.31.14-eks-3385e9b                              t3a.medium   us-east-1f
+# Karpenter 1.12.1 on EKS 1.34, custom-VPC private subnets.
+# A Pending pod (3 vCPU — exceeds any t3a.medium) triggered a JIT spot
+# provision; node Ready in ~48s. Captured 2026-07-06T05:20Z
 
-===NodeClaims===
-NAME            TYPE         CAPACITY   ZONE         NODE                            READY     AGE
-default-fgzjn   c7a.medium   spot       us-east-1b   ip-172-31-45-216.ec2.internal   True      14m
-default-htflz                                                                        Unknown   14m
+$ kubectl get nodeclaims
+NAME            TYPE        CAPACITY   ZONE         NODE                         READY   AGE
+default-vpl6c   t3.xlarge   spot       us-east-1b   ip-10-0-30-94.ec2.internal   True    2m47s
 
-===NodePool / EC2NodeClass===
-NAME                            NODECLASS   NODES   READY   AGE
-nodepool.karpenter.sh/default   default     0       True    46m
-
-NAME                                     READY   AGE
-ec2nodeclass.karpenter.k8s.aws/default   True    46m
+$ kubectl get nodes -L karpenter.sh/nodepool,karpenter.sh/capacity-type,node.kubernetes.io/instance-type
+NAME                          STATUS   ROLES    AGE     VERSION               NODEPOOL   CAPACITY-TYPE   INSTANCE-TYPE
+ip-10-0-26-207.ec2.internal   Ready    <none>   44m     v1.34.9-eks-7d6f6ec                              t3a.medium
+ip-10-0-30-94.ec2.internal    Ready    <none>   2m26s   v1.34.9-eks-7d6f6ec   default    spot            t3.xlarge
+ip-10-0-40-166.ec2.internal   Ready    <none>   44m     v1.34.9-eks-7d6f6ec                              t3a.medium
+ip-10-0-5-255.ec2.internal    Ready    <none>   44m     v1.34.9-eks-7d6f6ec                              t3a.medium

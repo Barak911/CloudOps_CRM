@@ -1,39 +1,31 @@
-=== ArgoCD apps (clean apply, root + 2 children + the substrate via terraform) ===
+# Fresh bootstrap on the CUSTOM VPC path (use_custom_vpc=true), EKS 1.34
+# terraform apply from a clean account -> all ArgoCD apps Healthy.
+# Captured 2026-07-06T05:09Z
+
+$ kubectl get nodes -o wide
+NAME                         STATUS  INTERNAL-IP    CONTAINER-RUNTIME    
+ip-10-0-26-207.ec2.internal  Ready   10.0.26.207    2023.12.20260622     
+ip-10-0-40-166.ec2.internal  Ready   10.0.40.166    2023.12.20260622     
+ip-10-0-5-255.ec2.internal   Ready   10.0.5.255     2023.12.20260622     
+
+$ kubectl get applications -n argocd
 NAME               SYNC STATUS   HEALTH STATUS
-crm-manifests      OutOfSync     Healthy
-crm-stack          Synced        Progressing
+crm-manifests      Synced        Healthy
+crm-stack          Synced        Healthy
 prometheus-stack   Synced        Healthy
 root               Synced        Healthy
 
-=== Pods by namespace ===
-  argocd             5/5 Running
-  cert-manager       3/3 Running
-  crm                10/10 Running
-  external-secrets   3/3 Running
-  ingress-nginx      1/1 Running
-  karpenter          2/2 Running
-  kube-system        13/13 Running
-  monitoring         8/8 Running
+$ kubectl get pods -A --no-headers | awk '$4!="Running" && $4!="Completed"' (empty = all green)
 
-=== MongoDB ReplicaSet (3 members on 3 distinct nodes) ===
-mongodb-0    Running  node=12m                            zone=
-mongodb-1    Running  node=ip-172-31-20-109.ec2.internal  zone=
-mongodb-2    Running  node=ip-172-31-65-60.ec2.internal   zone=
-
-=== ExternalSecrets (ESO -> AWS Secrets Manager) ===
-NAME                               STORE                 REFRESH INTERVAL   STATUS         READY
-elasticsearch-master-credentials   aws-secrets-manager   1h                 SecretSynced   True
-mongodb-app-credentials            aws-secrets-manager   1h                 SecretSynced   True
-mongodb-credentials                aws-secrets-manager   1h                 SecretSynced   True
-
-=== CRUD round-trip via Ingress ===
-Ingress: ac3aafaae2ca54ef4a95d0b516c6c3ed-874ee8cf474ed648.elb.us-east-1.amazonaws.com
-GET /ready:    {"database":"connected","service":"CRM API","status":"ready"}
-GET /stats:    {"latest_entry_id":"6a30039ee701941cdf9f9196","total_persons":1}
-GET /person/proof-1:
-{
-    "_id": "6a30039ee701941cdf9f9196",
-    "email": "p@t.com",
-    "name": "Proof",
-    "person_id": "proof-1"
-}
+$ kubectl get pods -n crm
+NAME                               READY   STATUS    RESTARTS      AGE
+crm-app-74564d7b9b-s4mn2           1/1     Running   0             114s
+crm-app-74564d7b9b-tfrmg           1/1     Running   0             2m14s
+crm-stack-fluentd-5j4wt            1/1     Running   1 (22m ago)   25m
+crm-stack-fluentd-t46n2            1/1     Running   1 (22m ago)   25m
+crm-stack-fluentd-xhh86            1/1     Running   1 (22m ago)   25m
+crm-stack-kibana-98f6ccbc6-4pwvx   1/1     Running   0             25m
+elasticsearch-master-0             1/1     Running   0             25m
+mongodb-0                          1/1     Running   0             25m
+mongodb-1                          1/1     Running   0             25m
+mongodb-2                          1/1     Running   0             25m
