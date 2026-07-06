@@ -129,17 +129,28 @@ jobs:
             sleep 10
           done
 
-      - name: Confirm Elasticsearch seed Job succeeded
-        # The seed (index template + ingest pipeline) is now a chart-baked
-        # ArgoCD Sync-hook Job — k8s/crm-stack/templates/elasticsearch-seed-job.yaml.
-        # ArgoCD fires it on every crm-stack sync; this step just asserts
-        # the most recent run completed.
+      - name: Confirm Elasticsearch was seeded
+        # The seed (index template + ingest pipeline) is a chart-baked ArgoCD
+        # Sync-hook Job with ttlSecondsAfterFinished: 600 — so the Job OBJECT
+        # may already be garbage-collected by the time this step runs (it
+        # raced the TTL and failed exactly that way once). Assert the seed's
+        # EFFECT instead: the index template must exist in ES. Fall back to
+        # watching the Job only if it still exists (seed still in flight).
         run: |
-          echo "Waiting for crm-stack-elasticsearch-seed Job to be Complete..."
-          kubectl wait --for=condition=complete \
-            job/crm-stack-elasticsearch-seed -n crm --timeout=300s
-          echo "Seed Job Complete. Logs:"
-          kubectl logs -n crm job/crm-stack-elasticsearch-seed --tail=20
+          if kubectl get job/crm-stack-elasticsearch-seed -n crm >/dev/null 2>&1; then
+            echo "Seed Job still present — waiting for completion..."
+            kubectl wait --for=condition=complete \
+              job/crm-stack-elasticsearch-seed -n crm --timeout=300s
+          else
+            echo "Seed Job already TTL-reaped (expected on late verify) — checking its effect."
+          fi
+          echo "Asserting logs-template exists in Elasticsearch..."
+          ES_PASS=$(kubectl get secret elasticsearch-master-credentials -n crm \
+            -o jsonpath='{.data.password}' | base64 -d)
+          kubectl exec -n crm elasticsearch-master-0 -- \
+            curl -sk -u "elastic:$ES_PASS" \
+            "https://localhost:9200/_index_template/logs-template" \
+            | grep -q '"logs-template"' && echo "Index template present — seed verified."
 
   # ---------------------------------------------------------------------------
   # Job 2: CRM API integration tests via the ingress
