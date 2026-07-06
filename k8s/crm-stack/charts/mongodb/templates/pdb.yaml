@@ -18,4 +18,7 @@ spec:
   selector:
     matchLabels:
       {{- include "mongodb.selectorLabels" . | nindent 6 }}
+      # Members only — must NOT match the rs-init hook Job pod (Jobs have no
+      # scale subresource, which wedges the disruption controller).
+      app.kubernetes.io/component: replicaset-member
 {{- end }}

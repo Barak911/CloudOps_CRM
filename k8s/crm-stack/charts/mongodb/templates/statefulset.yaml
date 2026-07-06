@@ -27,6 +27,12 @@ spec:
       {{- end }}
       labels:
         {{- include "mongodb.selectorLabels" . | nindent 8 }}
+        # Distinguishes ReplicaSet members from the rs-init hook Job pod,
+        # which shares the chart selectorLabels. The PDB selects on this:
+        # if it matched the Job pod too, the disruption controller fails
+        # with "jobs.batch does not implement the scale subresource" and
+        # the PDB reports DisruptionsAllowed=0 (SyncFailed) forever.
+        app.kubernetes.io/component: replicaset-member
         {{- with .Values.global.labels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
