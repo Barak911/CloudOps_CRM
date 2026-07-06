@@ -13,7 +13,11 @@ dependencies:
     condition: crm-app.enabled
 
   - name: mongodb
-    version: "1.0.0"
+    # Bump the subchart version on ANY content change — ArgoCD's repo-server
+    # caches file:// helm dependencies keyed by name-version, so repackaging
+    # the same version serves stale manifests from cache (bit us live: a PDB
+    # fix wouldn't deploy until this bump).
+    version: "1.0.1"
     repository: "file://./charts/mongodb"
     condition: mongodb.enabled
 
