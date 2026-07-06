@@ -1,12 +1,12 @@
-# Fresh bootstrap on the CUSTOM VPC path (use_custom_vpc=true), EKS 1.34
-# terraform apply from a clean account -> all ArgoCD apps Healthy.
-# Captured 2026-07-06T05:09Z
+# Fresh bootstrap on the CUSTOM VPC path (use_custom_vpc=true), EKS 1.34,
+# ArgoCD v3.4.3, Karpenter 1.12.1. terraform apply from a clean account ->
+# all ArgoCD apps Healthy. Captured 2026-07-06T06:38Z
 
-$ kubectl get nodes -o wide
-NAME                         STATUS  INTERNAL-IP    CONTAINER-RUNTIME    
-ip-10-0-26-207.ec2.internal  Ready   10.0.26.207    2023.12.20260622     
-ip-10-0-40-166.ec2.internal  Ready   10.0.40.166    2023.12.20260622     
-ip-10-0-5-255.ec2.internal   Ready   10.0.5.255     2023.12.20260622     
+$ kubectl get nodes -o wide   # 10.0.x = private subnets, custom VPC
+NAME                         STATUS  INTERNAL-IP    VERSION
+ip-10-0-26-207.ec2.internal  Ready   10.0.26.207    v1.34.9-eks-7d6f6ec
+ip-10-0-40-166.ec2.internal  Ready   10.0.40.166    v1.34.9-eks-7d6f6ec
+ip-10-0-5-255.ec2.internal   Ready   10.0.5.255     v1.34.9-eks-7d6f6ec
 
 $ kubectl get applications -n argocd
 NAME               SYNC STATUS   HEALTH STATUS
@@ -15,17 +15,23 @@ crm-stack          Synced        Healthy
 prometheus-stack   Synced        Healthy
 root               Synced        Healthy
 
-$ kubectl get pods -A --no-headers | awk '$4!="Running" && $4!="Completed"' (empty = all green)
+$ kubectl get pdb -n crm
+NAME                       MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+crm-app                    1               N/A               1                     114m
+elasticsearch-master-pdb   N/A             1                 1                     114m
+mongodb                    N/A             1                 1                     114m
+
+$ kubectl get pods -A --no-headers | awk '$4!="Running" && $4!="Completed"'   # (empty = all green)
 
 $ kubectl get pods -n crm
-NAME                               READY   STATUS    RESTARTS      AGE
-crm-app-74564d7b9b-s4mn2           1/1     Running   0             114s
-crm-app-74564d7b9b-tfrmg           1/1     Running   0             2m14s
-crm-stack-fluentd-5j4wt            1/1     Running   1 (22m ago)   25m
-crm-stack-fluentd-t46n2            1/1     Running   1 (22m ago)   25m
-crm-stack-fluentd-xhh86            1/1     Running   1 (22m ago)   25m
-crm-stack-kibana-98f6ccbc6-4pwvx   1/1     Running   0             25m
-elasticsearch-master-0             1/1     Running   0             25m
-mongodb-0                          1/1     Running   0             25m
-mongodb-1                          1/1     Running   0             25m
-mongodb-2                          1/1     Running   0             25m
+NAME                               READY   STATUS    RESTARTS       AGE
+crm-app-74564d7b9b-s4mn2           1/1     Running   0              90m
+crm-app-74564d7b9b-tfrmg           1/1     Running   0              91m
+crm-stack-fluentd-5j4wt            1/1     Running   1 (110m ago)   114m
+crm-stack-fluentd-t46n2            1/1     Running   1 (111m ago)   114m
+crm-stack-fluentd-xhh86            1/1     Running   1 (110m ago)   114m
+crm-stack-kibana-98f6ccbc6-4pwvx   1/1     Running   0              114m
+elasticsearch-master-0             1/1     Running   0              114m
+mongodb-0                          1/1     Running   0              40m
+mongodb-1                          1/1     Running   0              40m
+mongodb-2                          1/1     Running   0              41m
