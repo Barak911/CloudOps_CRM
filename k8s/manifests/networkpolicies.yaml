@@ -340,3 +340,47 @@ spec:
       ports:
         - protocol: TCP
           port: 9093
+---
+# Grafana must reach its Prometheus datasource. Found live: with
+# default-deny-ingress in monitoring and no rule for this flow, EVERY
+# dashboard panel showed "No data" — Grafana could not query Prometheus
+# at all. The proof captures checked rules via the API, so the breakage
+# was invisible until someone opened the UI.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-from-grafana
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: grafana
+      ports:
+        - protocol: TCP
+          port: 9090
+---
+# Prometheus must scrape components INSIDE monitoring (kube-state-metrics,
+# operator, alertmanager metrics, grafana metrics). Found live: 4 targets
+# down under default-deny — and with kube-state-metrics unscrapable, the
+# MongoDB quorum alerts were VACUOUS (no data means `< 2` can never fire —
+# an alert that looks loaded and healthy but can't page). Scoped by source
+# identity: only prometheus pods, any port, monitoring namespace only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-scrapes-from-prometheus
+  namespace: monitoring
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
