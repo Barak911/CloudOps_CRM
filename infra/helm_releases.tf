@@ -231,6 +231,23 @@ resource "kubernetes_job_v1" "external_secrets_ready" {
             "crd/clustersecretstores.external-secrets.io",
           ]
         }
+        # Same principle as the cert-manager gate: the VALIDATING WEBHOOK is
+        # what downstream creation actually waits on. Creating the
+        # SecretStore right after CRDs turn Established races the webhook
+        # pods — the API server calls validate.secretstore.external-secrets.io
+        # and gets "no endpoints available". Caught on the first clean
+        # custom-VPC bootstrap; operator+CRDs alone are not enough.
+        container {
+          name  = "wait-webhook"
+          image = local.wait_image
+          args = [
+            "wait",
+            "--namespace=external-secrets",
+            "--for=condition=Available",
+            "--timeout=600s",
+            "deployment/external-secrets-webhook",
+          ]
+        }
       }
     }
   }

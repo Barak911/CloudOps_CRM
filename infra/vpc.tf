@@ -20,6 +20,12 @@ module "vpc" {
   }
   private_subnet_tags = {
     "kubernetes.io/role/internal-elb" = 1
+    # Karpenter's EC2NodeClass discovers subnets by this tag. It MUST be set
+    # here, through the module — a standalone aws_ec2_tag on module-managed
+    # subnets loses a tag war: the module owns the subnets' tag set and
+    # reverts out-of-band tags on the next apply (observed live: NodeClass
+    # went SubnetsReady=False mid-bootstrap when the tag vanished).
+    "karpenter.sh/discovery" = var.cluster_name
   }
 
   tags = {

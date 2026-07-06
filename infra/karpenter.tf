@@ -350,12 +350,11 @@ resource "aws_ec2_tag" "karpenter_discovery_subnets_default_vpc" {
   value       = var.cluster_name
 }
 
-resource "aws_ec2_tag" "karpenter_discovery_subnets_custom_vpc" {
-  for_each    = var.use_custom_vpc ? toset(module.vpc[0].private_subnets) : toset([])
-  resource_id = each.value
-  key         = "karpenter.sh/discovery"
-  value       = var.cluster_name
-}
+# Custom-VPC subnets get the karpenter.sh/discovery tag via the VPC module's
+# private_subnet_tags (vpc.tf) — the module owns those subnets' tag set, and a
+# standalone aws_ec2_tag here gets reverted on the module's next apply. The
+# default-VPC branch keeps aws_ec2_tag above because those subnets are
+# unmanaged data sources with no competing owner.
 
 output "karpenter_controller_role_arn" {
   description = "IRSA role ARN for the Karpenter controller service account"
