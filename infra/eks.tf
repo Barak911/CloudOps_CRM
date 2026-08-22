@@ -32,7 +32,7 @@ data "aws_subnets" "default" {
 
 module "eks" {
   source  = "terraform-aws-modules/eks/aws"
-  version = "~> 20.0"
+  version = "~> 21.25"
 
   cluster_name    = var.cluster_name
   cluster_version = var.cluster_version
