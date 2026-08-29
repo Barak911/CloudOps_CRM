@@ -1,7 +1,7 @@
 module "vpc" {
   count   = var.use_custom_vpc ? 1 : 0
   source  = "terraform-aws-modules/vpc/aws"
-  version = "~> 5.0"
+  version = "~> 6.7"
 
   name = "${var.cluster_name}-vpc"
   cidr = var.vpc_cidr
