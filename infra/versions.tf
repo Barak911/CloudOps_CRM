@@ -12,7 +12,7 @@ terraform {
     }
     helm = {
       source  = "hashicorp/helm"
-      version = "~> 2.17"
+      version = "~> 3.3"
     }
     # gavinbunney/kubectl applies raw YAML without server-side validation at
     # plan time. The hashicorp/kubernetes provider's kubernetes_manifest does
